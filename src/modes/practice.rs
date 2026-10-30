@@ -6,17 +6,20 @@ use serde_json::{Value, json};
 
 use crate::mode::{Followup, Mode, Strictness, Outcome, Target, TargetKind};
 
+/// How much of a missed word to practise, in characters. The word is
+/// repeated until at least this many of its letters have been asked for.
+pub const PRACTICE_CHARS: usize = 50;
+
 pub struct Practice {
     word: String,
-    chars: usize,
     reps: usize,
 }
 
 impl Practice {
-    pub fn new(word: String, chars: usize) -> Practice {
+    pub fn new(word: String) -> Practice {
         let len = word.chars().count().max(1);
-        let reps = chars.div_ceil(len).max(1);
-        Practice { word, chars, reps }
+        let reps = PRACTICE_CHARS.div_ceil(len).max(1);
+        Practice { word, reps }
     }
 }
 
@@ -30,7 +33,7 @@ impl Mode for Practice {
     }
 
     fn config(&self) -> Value {
-        json!({ "word": self.word, "practice_chars": self.chars, "reps": self.reps })
+        json!({ "word": self.word, "reps": self.reps })
     }
 
     fn targets(&mut self) -> Vec<Target> {
@@ -46,7 +49,7 @@ impl Mode for Practice {
     fn after(&self, outcome: &Outcome) -> Vec<Followup> {
         match outcome {
             Outcome::Failed { .. } | Outcome::Afk { .. } => vec![Followup {
-                mode: Box::new(Practice::new(self.word.clone(), self.chars)),
+                mode: Box::new(Practice::new(self.word.clone())),
                 child: true,
             }],
             Outcome::Completed | Outcome::Aborted => vec![],

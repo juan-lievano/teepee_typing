@@ -17,7 +17,6 @@ pub struct Literature {
     start: usize,
     per_drill: usize,
     strictness: Strictness,
-    practice_chars: usize,
 }
 
 impl Literature {
@@ -27,9 +26,8 @@ impl Literature {
         start: usize,
         per_drill: usize,
         strictness: Strictness,
-        practice_chars: usize,
     ) -> Literature {
-        Literature { book, sentences, start, per_drill, strictness, practice_chars }
+        Literature { book, sentences, start, per_drill, strictness }
     }
 
     fn end(&self) -> usize {
@@ -43,7 +41,6 @@ impl Literature {
             start,
             self.per_drill,
             self.strictness,
-            self.practice_chars,
         ))
     }
 }
@@ -70,7 +67,6 @@ impl Mode for Literature {
             "start": self.start,
             "per_drill": self.per_drill,
             "strictness": self.strictness.as_str(),
-            "practice_chars": self.practice_chars,
         })
     }
 
@@ -95,7 +91,7 @@ impl Mode for Literature {
             }
             // Practice the word, then pick the book up at the failed sentence.
             Outcome::Failed { target_idx, word, .. } => vec![
-                Followup { mode: Box::new(Practice::new(word.clone(), self.practice_chars)), child: true },
+                Followup { mode: Box::new(Practice::new(word.clone())), child: true },
                 Followup { mode: self.from(self.start + target_idx), child: false },
             ],
             // Pause mid-sentence: redo that sentence, nothing to practise.

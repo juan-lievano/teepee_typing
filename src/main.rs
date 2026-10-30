@@ -44,9 +44,6 @@ enum Cmd {
         /// Words per drill.
         #[arg(long, default_value_t = 50)]
         words: usize,
-        /// Characters of a missed word to practise (reps = chars / word length, rounded up).
-        #[arg(long, default_value_t = 50)]
-        practice_chars: usize,
         /// Keep capitals ("February", "I"). Default lowercases everything,
         /// like Monkeytype with punctuation off.
         #[arg(long)]
@@ -62,9 +59,6 @@ enum Cmd {
         /// How mistakes are judged.
         #[arg(long, value_enum, default_value_t = Strictness::Expert)]
         strict: Strictness,
-        /// Characters of a missed word to practise (reps = chars / word length, rounded up).
-        #[arg(long, default_value_t = 50)]
-        practice_chars: usize,
     },
     /// List available books.
     Books,
@@ -87,12 +81,21 @@ enum Cmd {
     },
     /// Print the data directory.
     Data,
+    /// Delete the database (drills, keystrokes, tags). Books are kept.
+    Reset {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, practice_chars: 50, keep_case: false });
+    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, keep_case: false });
     let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
+    if let Cmd::Reset { yes } = cmd {
+        return reset(yes); // before Store::open, which would recreate the file
+    }
 
     let store = Store::open(&paths::db_path())?;
     let tags = match cli.tag.is_empty() {
@@ -130,6 +133,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Reset { .. } => unreachable!("handled above"),
         Cmd::Tags => {
             println!("{}", describe_tags(&tags));
             Ok(())
@@ -171,11 +175,11 @@ fn main() -> Result<()> {
             println!("retagged {n} drills");
             Ok(())
         }
-        Cmd::Master { list, words, practice_chars, keep_case } => {
+        Cmd::Master { list, words, keep_case } => {
             let list = words::list(&list, keep_case).expect("clap validated the list name");
-            run(store, tags, afk, vec![Box::new(Master::new(list, words, practice_chars))])
+            run(store, tags, afk, vec![Box::new(Master::new(list, words))])
         }
-        Cmd::Lit { book, sentences, strict, practice_chars } => {
+        Cmd::Lit { book, sentences, strict } => {
             let path = paths::books_dir().join(format!("{book}.txt"));
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {} (see `teepee books`)", path.display()))?;
@@ -189,10 +193,40 @@ fn main() -> Result<()> {
                 println!("{book}: all {} sentences done", lines.len());
                 return Ok(());
             }
-            let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, practice_chars);
+            let mode = Literature::new(book, Arc::new(lines), start, sentences, strict);
             run(store, tags, afk, vec![Box::new(mode)])
         }
     }
+}
+
+fn reset(yes: bool) -> Result<()> {
+    let db = paths::db_path();
+    if !db.exists() {
+        println!("nothing to delete: {} does not exist", db.display());
+        return Ok(());
+    }
+    let drills: i64 = rusqlite::Connection::open(&db)
+        .and_then(|c| c.query_row("SELECT count(*) FROM drills", [], |r| r.get(0)))
+        .unwrap_or(0);
+    println!("delete {} ({drills} drills)? books are kept.", db.display());
+    if !yes {
+        print!("type yes to confirm: ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        if line.trim() != "yes" {
+            println!("kept");
+            return Ok(());
+        }
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let p = db.with_file_name(format!("teepee.db{suffix}"));
+        if p.exists() {
+            std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
+        }
+    }
+    println!("deleted. tags live in the database, so set them again: teepee --tag <keyboard>");
+    Ok(())
 }
 
 /// Sorted, deduplicated; `none` means no tags.

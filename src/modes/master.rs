@@ -1,7 +1,6 @@
 //! Monkeytype "master" difficulty: random words, the first wrong key ends the
-//! drill. A failure spawns a practice drill of the missed word (about
-//! `practice_chars` characters of it), then a fresh master drill, so the
-//! stream never needs a menu.
+//! drill. A failure spawns a practice drill of the missed word, then a fresh
+//! master drill, so the stream never needs a menu.
 
 use std::sync::Arc;
 
@@ -14,16 +13,15 @@ use crate::words::WordList;
 pub struct Master {
     list: Arc<WordList>,
     words: usize,
-    practice_chars: usize,
 }
 
 impl Master {
-    pub fn new(list: Arc<WordList>, words: usize, practice_chars: usize) -> Master {
-        Master { list, words, practice_chars }
+    pub fn new(list: Arc<WordList>, words: usize) -> Master {
+        Master { list, words }
     }
 
     fn fresh(&self) -> Box<dyn Mode> {
-        Box::new(Master::new(self.list.clone(), self.words, self.practice_chars))
+        Box::new(Master::new(self.list.clone(), self.words))
     }
 }
 
@@ -37,7 +35,7 @@ impl Mode for Master {
     }
 
     fn config(&self) -> Value {
-        json!({ "list": self.list.name, "keep_case": self.list.keep_case, "words": self.words, "practice_chars": self.practice_chars })
+        json!({ "list": self.list.name, "keep_case": self.list.keep_case, "words": self.words })
     }
 
     fn targets(&mut self) -> Vec<Target> {
@@ -61,7 +59,7 @@ impl Mode for Master {
         match outcome {
             Outcome::Completed | Outcome::Afk { .. } => vec![Followup { mode: self.fresh(), child: false }],
             Outcome::Failed { target, .. } => vec![
-                Followup { mode: Box::new(Practice::new(target.text.clone(), self.practice_chars)), child: true },
+                Followup { mode: Box::new(Practice::new(target.text.clone())), child: true },
                 Followup { mode: self.fresh(), child: false },
             ],
             Outcome::Aborted => vec![],

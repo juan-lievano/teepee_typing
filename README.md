@@ -19,6 +19,7 @@ teepee retag laptop --last 2h        # fix the tags on the last two hours of dri
 teepee retag none --ids 120-140 --dry-run
 teepee books                 # books you have prepared
 teepee data                  # where the database lives
+teepee reset                 # delete the database (asks first); books are kept
 ```
 
 Tags mark things the data can't know on its own, like which keyboard you
@@ -29,7 +30,8 @@ Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then practised, repeated until about 50 characters of it have been typed
-(`--practice-chars`), and a fresh drill starts, with no menu in between.
+(`PRACTICE_CHARS` in `src/modes/practice.rs`), and a fresh drill starts, with
+no menu in between.
 A pause longer than `--afk` seconds (default 3) between two keys voids the
 drill: it is saved with outcome `afk`, excluded from stats, and the mode
 restarts. Waiting before the first key costs nothing.
