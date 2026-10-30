@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS keystrokes (
   pos        INTEGER NOT NULL,             -- index into the target's expected sequence
   expected   TEXT,                         -- NULL when typing past the end
   typed      TEXT,                         -- NULL for backspace
-  kind       TEXT    NOT NULL,             -- char | backspace
+  kind       TEXT    NOT NULL,             -- char | backspace | ignored (settle period after a fail)
   correct    INTEGER,                      -- NULL for backspace
   PRIMARY KEY (drill_id, seq)
 );

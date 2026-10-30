@@ -3,7 +3,12 @@
 
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// After a failure the next drill ignores keys until the hands have been
+/// still this long, so the tail of the word you were typing can't fail the
+/// practice drill before you have read it.
+const SETTLE: Duration = Duration::from_millis(400);
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -46,6 +51,9 @@ struct Drill<'a> {
     correct_chars: usize,
     banner: Option<String>,
     tags: String,
+    /// While set, keys arriving sooner than SETTLE after the previous one are
+    /// ignored; cleared by the first key that arrives after a quiet gap.
+    settle_last_input: Option<Instant>,
 }
 
 impl Kernel {
@@ -95,6 +103,7 @@ impl Kernel {
             seq: 0,
             first_key: None,
             correct_chars: 0,
+            settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
         };
@@ -110,6 +119,19 @@ impl Kernel {
                 continue;
             }
             let t_ns = (at - d.t0).as_nanos() as i64;
+
+            if let Some(last) = d.settle_last_input {
+                if at.duration_since(last) < SETTLE {
+                    d.settle_last_input = Some(at);
+                    if let KeyCode::Char(c) = key.code {
+                        let pos = d.typed.len();
+                        self.record(&d, t_ns, pos, Some(c), "ignored", None)?;
+                        d.seq += 1;
+                    }
+                    continue;
+                }
+                d.settle_last_input = None;
+            }
 
             match key.code {
                 KeyCode::Esc => return self.finish(&d, t_ns, Outcome::Aborted),

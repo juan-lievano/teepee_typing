@@ -27,6 +27,9 @@ Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then typed ten times and a fresh drill starts, with no menu in between.
+Keys that arrive in the first moments after a failure, before your hands have
+been still for 400 ms, are ignored (and logged as `ignored`), so the tail of
+the word you were typing cannot fail the practice drill.
 
 ## Modes and strictness
 
@@ -51,7 +54,7 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 |--------------|-------------|-------|
 | `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome, failed word, mode config as JSON, tags as JSON array |
 | `targets`    | word or sentence asked for | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `pride#1037` |
-| `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`/`backspace`), correct |
+| `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`/`backspace`/`ignored`), correct |
 
 `drill_summary` is a view deriving WPM and accuracy from keystrokes.
 Timestamps are taken on a dedicated input thread the moment a key is read.
