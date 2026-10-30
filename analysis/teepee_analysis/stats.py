@@ -1,6 +1,7 @@
 """teepee-stats: quick looks at the keystroke log.
 
     teepee-stats summary [--days N]   recent drills: wpm, accuracy, outcome
+    teepee-stats progress [--days N]  master mode per day: words before failing, per-word survival
     teepee-stats missed  [--days N]   words you have failed on: seen x times, failed y
     teepee-stats words   [--days N]   slowest words by ms per character
     teepee-stats trigrams [--min N]   slowest trigrams by median interval to their last key
@@ -54,6 +55,29 @@ FROM failed f LEFT JOIN seen s ON s.word = f.word
 ORDER BY f.failed DESC, fail_pct DESC, f.word LIMIT 40
 """
 
+# Master-mode progress per day. A drill that fails on word 4 attempted 4 words
+# and completed 3; survival = completed / attempted. words_per_fail is the
+# expected run length at that rate.
+PROGRESS = """
+WITH m AS (
+  SELECT d.id, strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day, d.outcome,
+         (SELECT count(*) FROM tp.targets t WHERE t.drill_id = d.id AND t.completed_at_ns IS NOT NULL) AS words,
+         (SELECT coalesce(sum(k.correct), 0) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char') AS chars,
+         (SELECT coalesce(sum(k.correct), 0) FILTER (WHERE true) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char') / 5.0
+           / nullif((SELECT max(k.t_ns) - min(k.t_ns) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char'), 0) * 60e9 AS wpm
+  FROM tp.drills d
+  WHERE d.mode = 'master' AND d.outcome IN ('failed', 'completed')
+    AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
+)
+SELECT day, count(*) AS drills, sum(outcome = 'completed') AS finished,
+       round(avg(words), 1) AS mean_words, median(words) AS median_words, max(words) AS best,
+       round(avg(chars), 0) AS mean_chars,
+       round(100.0 * sum(words) / nullif(sum(words) + sum(outcome = 'failed'), 0), 1) AS word_survival_pct,
+       round(sum(words) * 1.0 / nullif(sum(outcome = 'failed'), 0), 1) AS words_per_fail,
+       round(avg(wpm), 1) AS wpm
+FROM m GROUP BY 1 ORDER BY 1 DESC LIMIT 60
+"""
+
 # Word speed = (completion - first key on that word) / characters, completed words only.
 WORDS = """
 WITH first AS (
@@ -93,12 +117,12 @@ GROUP BY 1 HAVING n >= $min ORDER BY median_ms DESC LIMIT 40
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=["summary", "missed", "words", "trigrams"])
+    ap.add_argument("what", choices=["summary", "progress", "missed", "words", "trigrams"])
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--min", type=int, default=5, help="minimum occurrences (words, trigrams)")
     ap.add_argument("--tag", help="only drills carrying this tag")
     a = ap.parse_args()
-    sql = {"summary": SUMMARY, "missed": MISSED, "words": WORDS, "trigrams": TRIGRAMS}[a.what]
+    sql = {"summary": SUMMARY, "progress": PROGRESS, "missed": MISSED, "words": WORDS, "trigrams": TRIGRAMS}[a.what]
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
         sql.replace("$days", str(int(a.days)))
