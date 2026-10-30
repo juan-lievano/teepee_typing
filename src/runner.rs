@@ -30,36 +30,6 @@ mod theme {
     pub const SUB: Color = Color::Rgb(0x64, 0x66, 0x69); // untyped text, chrome
     pub const TEXT: Color = Color::Rgb(0xd1, 0xd0, 0xc5); // typed text
     pub const ERROR: Color = Color::Rgb(0xca, 0x47, 0x54);
-    /// OSC 12: terminal cursor colour, for the bar caret.
-    pub const CURSOR_HEX: &str = "#e2b714";
-}
-
-pub use theme::CURSOR_HEX;
-
-/// How the next character to type is marked.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Caret {
-    /// The terminal's own cursor as a thin steady bar before the character.
-    Bar,
-    /// The character cell in the caret colour, Monkeytype style.
-    Block,
-}
-
-impl Caret {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Caret::Bar => "bar",
-            Caret::Block => "block",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Caret> {
-        match s {
-            "bar" => Some(Caret::Bar),
-            "block" => Some(Caret::Block),
-            _ => None,
-        }
-    }
 }
 
 pub struct Kernel {
@@ -68,7 +38,6 @@ pub struct Kernel {
     pub terminal: DefaultTerminal,
     /// A gap this long between two keys voids the drill (outcome `afk`).
     pub afk: Duration,
-    pub caret: Caret,
     /// Session labels (keyboard, place, ...) stamped on every drill.
     pub tags: Vec<String>,
 }
@@ -95,7 +64,6 @@ struct Drill<'a> {
     correct_chars: usize,
     banner: Option<String>,
     tags: String,
-    caret: Caret,
     /// While set, keys arriving sooner than SETTLE after the previous one are
     /// ignored; cleared by the first key that arrives after a quiet gap.
     settle_last_input: Option<Instant>,
@@ -154,7 +122,6 @@ impl Kernel {
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
-            caret: self.caret,
         };
         let strictness = d.mode.strictness();
 
@@ -333,8 +300,12 @@ fn word_span(exp: &[char], pos: usize) -> (usize, usize) {
 
 // ---------------------------------------------------------------- rendering
 
+/// Text column width and the padding of the box around it, in cells.
+const COLUMN: u16 = 72;
+const PAD_X: u16 = 4;
+const PAD_Y: u16 = 1;
+
 fn draw(f: &mut ratatui::Frame, d: &Drill) {
-    f.render_widget(Block::new().style(Style::default().bg(theme::BG)), f.area());
     let [header, banner, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
@@ -345,10 +316,10 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     f.render_widget(
         Line::from(vec![
-            Span::raw(format!(" {}", d.mode.title())).fg(theme::SUB),
+            Span::raw(format!(" {}", d.mode.title())).dim(),
             Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) })
                 .fg(theme::MAIN),
-            Span::raw("  esc quits").fg(theme::SUB),
+            Span::raw("  esc quits").dim(),
         ]),
         header,
     );
@@ -356,23 +327,21 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
         f.render_widget(Line::from(format!(" {b}")).fg(theme::ERROR).bold(), banner);
     }
 
-    let column = centered(body, 72);
-    let (lines, caret) = wrap(d, column.width.max(1) as usize, d.caret);
-    // Vertically centre a short text, keep long ones top-aligned.
+    // The text column, and a padded box around it painted in the theme.
+    let column = centered(body, COLUMN);
+    let lines = wrap(d, column.width.max(1) as usize);
     let n = lines.len() as u16;
-    let area = if n < column.height {
-        Rect { y: column.y + (column.height - n) / 2, height: n, ..column }
-    } else {
-        column
+    let text_h = n.min(column.height.saturating_sub(2 * PAD_Y)).max(1);
+    let box_h = text_h + 2 * PAD_Y;
+    let box_area = Rect {
+        x: column.x.saturating_sub(PAD_X),
+        y: column.y + column.height.saturating_sub(box_h) / 2,
+        width: (column.width + 2 * PAD_X).min(body.width),
+        height: box_h,
     };
-    f.render_widget(Paragraph::new(lines), area);
-    if d.caret == Caret::Bar
-        && let Some((row, col)) = caret
-        && row < area.height
-    {
-        // The terminal draws its own caret here (a steady bar, set at startup).
-        f.set_cursor_position((area.x + col, area.y + row));
-    }
+    f.render_widget(Block::new().style(Style::default().bg(theme::BG)), box_area);
+    let text_area = Rect { x: column.x, y: box_area.y + PAD_Y, width: column.width, height: text_h };
+    f.render_widget(Paragraph::new(lines), text_area);
 
     let wpm = match d.first_key {
         Some(t) if t.elapsed().as_secs_f64() > 0.5 => {
@@ -381,7 +350,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
         _ => 0.0,
     };
     f.render_widget(
-        Line::from(format!(" {:>3.0} wpm   {}/{}", wpm, d.cur, d.targets.len())).fg(theme::SUB),
+        Line::from(format!(" {:>3.0} wpm   {}/{}", wpm, d.cur, d.targets.len())).dim(),
         footer,
     );
 }
@@ -401,16 +370,12 @@ enum Glyph {
     Pending,
 }
 
-fn style(g: Glyph, caret: Caret) -> Style {
+fn style(g: Glyph) -> Style {
     match g {
         Glyph::Done => Style::default().fg(theme::TEXT),
         Glyph::Wrong => Style::default().fg(theme::ERROR),
         Glyph::Pending => Style::default().fg(theme::SUB),
-        Glyph::Cursor => match caret {
-            // The terminal draws the bar; the cell itself looks pending.
-            Caret::Bar => Style::default().fg(theme::SUB),
-            Caret::Block => Style::default().fg(theme::BG).bg(theme::MAIN),
-        },
+        Glyph::Cursor => Style::default().fg(theme::BG).bg(theme::MAIN),
     }
 }
 
@@ -439,9 +404,8 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
 }
 
 /// Greedy word wrap of what is on screen (all words, or the current
-/// sentence) into lines of `width`, plus the (row, col) of the caret.
-/// Done by hand so the caret position is exact.
-fn wrap(d: &Drill, width: usize, shape: Caret) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+/// sentence) into lines of `width`. Done by hand so the box can be sized.
+fn wrap(d: &Drill, width: usize) -> Vec<Line<'static>> {
     // Tokens are "word plus trailing space"; a line never breaks inside one.
     let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
     let shown: Vec<usize> = match d.targets[d.cur].kind {
@@ -464,19 +428,15 @@ fn wrap(d: &Drill, width: usize, shape: Caret) -> (Vec<Line<'static>>, Option<(u
 
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     let mut col = 0usize;
-    let mut caret = None;
     for tok in tokens {
         if col > 0 && col + tok.len() > width {
             lines.push(Vec::new());
             col = 0;
         }
         for (c, g) in tok {
-            if g == Glyph::Cursor {
-                caret = Some(((lines.len() - 1) as u16, col as u16));
-            }
-            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g, shape)));
+            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g)));
             col += 1;
         }
     }
-    (lines.into_iter().map(Line::from).collect(), caret)
+    lines.into_iter().map(Line::from).collect()
 }

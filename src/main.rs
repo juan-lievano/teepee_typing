@@ -14,7 +14,7 @@ use clap::{Parser, Subcommand};
 use crate::mode::{Mode, Strictness};
 use crate::modes::literature::Literature;
 use crate::modes::master::Master;
-use crate::runner::{Caret, Kernel};
+use crate::runner::Kernel;
 use crate::store::Store;
 
 /// Terminal typing trainer that records every keystroke.
@@ -30,9 +30,6 @@ struct Cli {
     /// Seconds between two keys after which the drill is void (outcome afk).
     #[arg(long, global = true, default_value_t = 3.0)]
     afk: f64,
-    /// Caret shape: bar (thin, default) or block. Sticky like --tag.
-    #[arg(long, global = true, value_enum)]
-    caret: Option<Caret>,
 }
 
 #[derive(Subcommand)]
@@ -97,13 +94,6 @@ fn main() -> Result<()> {
     let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
 
     let store = Store::open(&paths::db_path())?;
-    let caret = match cli.caret {
-        Some(c) => {
-            store.set_setting("caret", c.as_str())?;
-            c
-        }
-        None => store.setting("caret")?.and_then(|v| Caret::parse(&v)).unwrap_or(Caret::Bar),
-    };
     let tags = match cli.tag.is_empty() {
         true => store.current_tags()?,
         false => {
@@ -182,7 +172,7 @@ fn main() -> Result<()> {
         }
         Cmd::Master { list, words, reps, keep_case } => {
             let list = words::list(&list, keep_case).expect("clap validated the list name");
-            run(store, tags, afk, caret, vec![Box::new(Master::new(list, words, reps))])
+            run(store, tags, afk, vec![Box::new(Master::new(list, words, reps))])
         }
         Cmd::Lit { book, sentences, strict, reps } => {
             let path = paths::books_dir().join(format!("{book}.txt"));
@@ -199,7 +189,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, reps);
-            run(store, tags, afk, caret, vec![Box::new(mode)])
+            run(store, tags, afk, vec![Box::new(mode)])
         }
     }
 }
@@ -265,25 +255,12 @@ fn run(
     store: Store,
     tags: Vec<String>,
     afk: std::time::Duration,
-    caret: Caret,
     first: Vec<Box<dyn Mode>>,
 ) -> Result<()> {
-    use std::io::Write;
-
-    use ratatui::crossterm::{cursor::SetCursorStyle, execute};
     let terminal = ratatui::init();
-    if caret == Caret::Bar {
-        // The app positions the terminal's cursor before the next character.
-        let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
-        let _ = write!(std::io::stdout(), "\x1b]12;{}\x1b\\", runner::CURSOR_HEX);
-    }
     let rx = input::spawn();
-    let mut kernel = Kernel { store, rx, terminal, tags, afk, caret };
+    let mut kernel = Kernel { store, rx, terminal, tags, afk };
     let result = kernel.run(first);
-    if caret == Caret::Bar {
-        let _ = execute!(std::io::stdout(), SetCursorStyle::DefaultUserShape);
-        let _ = write!(std::io::stdout(), "\x1b]112\x1b\\"); // reset cursor colour
-    }
     ratatui::restore();
     result
 }
