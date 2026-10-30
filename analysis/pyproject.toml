@@ -1,0 +1,17 @@
+[project]
+name = "teepee-analysis"
+version = "0.1.0"
+description = "Stats and book preparation for teepee_typing"
+requires-python = ">=3.11"
+dependencies = ["duckdb>=1.1", "polars>=1.0"]
+
+[project.scripts]
+teepee-stats = "teepee_analysis.stats:main"
+teepee-book = "teepee_analysis.prep_book:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["teepee_analysis*"]
