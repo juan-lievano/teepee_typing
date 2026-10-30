@@ -98,6 +98,9 @@ fn main() -> Result<()> {
     }
 
     let store = Store::open(&paths::db_path())?;
+    if let Err(e) = store.monthly_snapshot(&paths::snapshots_dir()) {
+        eprintln!("monthly snapshot failed: {e:#}");
+    }
     let tags = match cli.tag.is_empty() {
         true => store.current_tags()?,
         false => {

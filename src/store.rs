@@ -239,6 +239,41 @@ impl Store {
         Ok(n)
     }
 
+    /// Month-end snapshots, kept forever in `<data>/snapshots/teepee-YYYY-MM.db`.
+    /// When the newest drill belongs to an earlier month than today and that
+    /// month has no snapshot yet, copy the database as it stands (nothing from
+    /// this month has been written yet), so the copy is how that month ended.
+    pub fn monthly_snapshot(&self, snapshots: &Path) -> Result<Option<std::path::PathBuf>> {
+        let last: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT strftime('%Y-%m', max(started_at_ms) / 1000, 'unixepoch', 'localtime') FROM drills",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        let now: String = self.conn.query_row("SELECT strftime('%Y-%m', 'now', 'localtime')", [], |r| r.get(0))?;
+        let Some(last) = last else { return Ok(None) };
+        if last >= now {
+            return Ok(None);
+        }
+        let dest = snapshots.join(format!("teepee-{last}.db"));
+        if dest.exists() {
+            return Ok(None);
+        }
+        std::fs::create_dir_all(snapshots)?;
+        let tmp = snapshots.join(format!("teepee-{last}.db.part"));
+        let mut out = Connection::open(&tmp)?;
+        {
+            let backup = rusqlite::backup::Backup::new(&self.conn, &mut out)?;
+            backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
+        }
+        drop(out);
+        std::fs::rename(&tmp, &dest)?;
+        Ok(Some(dest))
+    }
+
     /// Highest sentence number of `book` that was typed to completion.
     pub fn last_completed_sentence(&self, book: &str) -> Result<Option<usize>> {
         let prefix = format!("{book}#");

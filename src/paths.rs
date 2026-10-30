@@ -19,3 +19,8 @@ pub fn db_path() -> PathBuf {
 pub fn books_dir() -> PathBuf {
     data_dir().join("books")
 }
+
+/// Month-end copies of the database, kept forever.
+pub fn snapshots_dir() -> PathBuf {
+    data_dir().join("snapshots")
+}

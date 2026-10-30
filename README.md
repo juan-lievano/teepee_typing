@@ -63,7 +63,9 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 `data/teepee.db` in the repo checkout (gitignored; `teepee data` prints the
 path, `TEEPEE_DATA_DIR` overrides it). Every keystroke is written as it
 happens, in single-file journal mode, so the file is always consistent and
-whatever syncs the checkout syncs the data.
+whatever syncs the checkout syncs the data. At the first launch of a new month
+teepee copies the database as it ended the previous month to
+`data/snapshots/teepee-YYYY-MM.db`; those are kept forever.
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
