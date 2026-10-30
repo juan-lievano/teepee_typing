@@ -9,6 +9,8 @@ the same database file.
 ```sh
 teepee                       # master mode: 50 random words from english 10k
 teepee master --words 30     # shorter drills
+teepee master --list 1k      # english 200 / 1k / 5k / 10k (default)
+teepee master --keep-case    # keep "February", "I"; default lowercases like Monkeytype
 teepee lit pride             # a book, one sentence at a time (expert strictness)
 teepee lit pride --strict lenient
 teepee --tag voyager         # tag every drill from now on (sticky); --tag none clears
@@ -27,6 +29,9 @@ Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then typed ten times and a fresh drill starts, with no menu in between.
+A pause longer than `--afk` seconds (default 3) between two keys voids the
+drill: it is saved with outcome `afk`, excluded from stats, and the mode
+restarts. Waiting before the first key costs nothing.
 Keys that arrive in the first moments after a failure, before your hands have
 been still for 400 ms, are ignored (and logged as `ignored`), so the tail of
 the word you were typing cannot fail the practice drill.
@@ -52,8 +57,8 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
-| `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome, failed word, mode config as JSON, tags as JSON array |
-| `targets`    | word or sentence asked for | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `pride#1037` |
+| `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome (completed / failed / afk / aborted), failed word, mode config as JSON, tags as JSON array |
+| `targets`    | word or sentence reached | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `pride#1037`; words after a failure get no row |
 | `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`/`backspace`/`ignored`), correct |
 
 `drill_summary` is a view deriving WPM and accuracy from keystrokes.

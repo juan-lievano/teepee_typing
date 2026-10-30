@@ -98,6 +98,10 @@ impl Mode for Literature {
                 Followup { mode: Box::new(Practice::new(word.clone(), self.reps)), child: true },
                 Followup { mode: self.from(self.start + target_idx), child: false },
             ],
+            // Pause mid-sentence: redo that sentence, nothing to practise.
+            Outcome::Afk { target_idx } => {
+                vec![Followup { mode: self.from(self.start + target_idx), child: false }]
+            }
             _ => vec![],
         }
     }

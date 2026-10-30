@@ -27,6 +27,9 @@ struct Cli {
     /// Repeatable; `--tag none` clears. Tags stay until changed.
     #[arg(long, global = true)]
     tag: Vec<String>,
+    /// Seconds between two keys after which the drill is void (outcome afk).
+    #[arg(long, global = true, default_value_t = 3.0)]
+    afk: f64,
 }
 
 #[derive(Subcommand)]
@@ -34,12 +37,19 @@ enum Cmd {
     /// Random words from the english 10k list; the first wrong key fails the
     /// drill and the missed word is practised before a fresh drill (default).
     Master {
+        /// Word list: english 200, 1k, 5k or 10k.
+        #[arg(long, default_value = "10k", value_parser = words::LIST_NAMES.to_vec())]
+        list: String,
         /// Words per drill.
         #[arg(long, default_value_t = 50)]
         words: usize,
         /// Times a missed word is repeated.
         #[arg(long, default_value_t = 10)]
         reps: usize,
+        /// Keep capitals ("February", "I"). Default lowercases everything,
+        /// like Monkeytype with punctuation off.
+        #[arg(long)]
+        keep_case: bool,
     },
     /// Type a book one sentence at a time.
     Lit {
@@ -80,7 +90,8 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Master { words: 50, reps: 10 });
+    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, reps: 10, keep_case: false });
+    let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
     let store = Store::open(&paths::db_path())?;
     let tags = match cli.tag.is_empty() {
         true => store.current_tags()?,
@@ -158,8 +169,9 @@ fn main() -> Result<()> {
             println!("retagged {n} drills");
             Ok(())
         }
-        Cmd::Master { words, reps } => {
-            run(store, tags, vec![Box::new(Master::new(words::english_10k(), words, reps))])
+        Cmd::Master { list, words, reps, keep_case } => {
+            let list = words::list(&list, keep_case).expect("clap validated the list name");
+            run(store, tags, afk, vec![Box::new(Master::new(list, words, reps))])
         }
         Cmd::Lit { book, sentences, strict, reps } => {
             let path = paths::books_dir().join(format!("{book}.txt"));
@@ -176,7 +188,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, reps);
-            run(store, tags, vec![Box::new(mode)])
+            run(store, tags, afk, vec![Box::new(mode)])
         }
     }
 }
@@ -238,10 +250,15 @@ fn parse_id_range(s: &str) -> Result<(Option<i64>, Option<i64>)> {
     }
 }
 
-fn run(store: Store, tags: Vec<String>, first: Vec<Box<dyn Mode>>) -> Result<()> {
+fn run(
+    store: Store,
+    tags: Vec<String>,
+    afk: std::time::Duration,
+    first: Vec<Box<dyn Mode>>,
+) -> Result<()> {
     let terminal = ratatui::init();
     let rx = input::spawn();
-    let mut kernel = Kernel { store, rx, terminal, tags };
+    let mut kernel = Kernel { store, rx, terminal, tags, afk };
     let result = kernel.run(first);
     ratatui::restore();
     result

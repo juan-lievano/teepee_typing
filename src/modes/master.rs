@@ -36,7 +36,7 @@ impl Mode for Master {
     }
 
     fn config(&self) -> Value {
-        json!({ "list": self.list.name, "words": self.words, "practice_reps": self.reps })
+        json!({ "list": self.list.name, "keep_case": self.list.keep_case, "words": self.words, "practice_reps": self.reps })
     }
 
     fn targets(&mut self) -> Vec<Target> {
@@ -58,7 +58,7 @@ impl Mode for Master {
 
     fn after(&self, outcome: &Outcome) -> Vec<Followup> {
         match outcome {
-            Outcome::Completed => vec![Followup { mode: self.fresh(), child: false }],
+            Outcome::Completed | Outcome::Afk { .. } => vec![Followup { mode: self.fresh(), child: false }],
             Outcome::Failed { target, .. } => vec![
                 Followup { mode: Box::new(Practice::new(target.text.clone(), self.reps)), child: true },
                 Followup { mode: self.fresh(), child: false },

@@ -26,6 +26,8 @@ pub struct Kernel {
     pub store: Store,
     pub rx: Receiver<Stamped>,
     pub terminal: DefaultTerminal,
+    /// A gap this long between two keys voids the drill (outcome `afk`).
+    pub afk: Duration,
     /// Session labels (keyboard, place, ...) stamped on every drill.
     pub tags: Vec<String>,
 }
@@ -48,6 +50,7 @@ struct Drill<'a> {
     typed: Vec<char>,
     seq: i64,
     first_key: Option<Instant>,
+    last_key: Option<Instant>,
     correct_chars: usize,
     banner: Option<String>,
     tags: String,
@@ -66,8 +69,10 @@ impl Kernel {
             if let Outcome::Aborted = outcome {
                 break;
             }
-            if let Outcome::Failed { word, .. } = &outcome {
-                banner = Some(format!("missed  {word}"));
+            match &outcome {
+                Outcome::Failed { word, .. } => banner = Some(format!("missed  {word}")),
+                Outcome::Afk { .. } => banner = Some("paused too long, drill void".to_string()),
+                _ => {}
             }
             for Followup { mode, child } in mode.after(&outcome).into_iter().rev() {
                 queue.push_front(Queued { mode, parent: child.then_some(id) });
@@ -102,6 +107,7 @@ impl Kernel {
             typed: Vec::new(),
             seq: 0,
             first_key: None,
+            last_key: None,
             correct_chars: 0,
             settle_last_input: banner.is_some().then_some(t0),
             banner,
@@ -120,7 +126,11 @@ impl Kernel {
             }
             let t_ns = (at - d.t0).as_nanos() as i64;
 
-            if let Some(last) = d.settle_last_input {
+            let is_quit = matches!(key.code, KeyCode::Esc)
+                || matches!(key.code, KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL));
+            if let Some(last) = d.settle_last_input
+                && !is_quit
+            {
                 if at.duration_since(last) < SETTLE {
                     d.settle_last_input = Some(at);
                     if let KeyCode::Char(c) = key.code {
@@ -131,6 +141,18 @@ impl Kernel {
                     continue;
                 }
                 d.settle_last_input = None;
+            }
+
+            if let Some(last) = d.last_key
+                && at.duration_since(last) > self.afk
+                && !is_quit
+            {
+                // The key that ends the pause is dropped: the drill is void and
+                // the screen is about to change.
+                return self.finish(&d, t_ns, Outcome::Afk { target_idx: d.cur });
+            }
+            if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
+                d.last_key = Some(at);
             }
 
             match key.code {
@@ -206,22 +228,20 @@ impl Kernel {
         }
     }
 
-    /// Record `shown_at` for every target that is about to be on screen.
+    /// Write the row for the current target when it becomes current. Words
+    /// are all on screen from the start, so their `shown_at` is 0; a sentence
+    /// appears when it becomes current. Targets never reached get no row.
     fn mark_shown(&self, d: &mut Drill) -> Result<()> {
-        let now = d.t0.elapsed().as_nanos() as i64;
-        for i in 0..d.targets.len() {
-            if d.shown[i] {
-                continue;
-            }
-            let visible = match d.targets[i].kind {
-                TargetKind::Word => true,
-                TargetKind::Sentence => i == d.cur,
-            };
-            if visible {
-                self.store.add_target(d.id, i, &d.targets[i], now)?;
-                d.shown[i] = true;
-            }
+        let i = d.cur;
+        if d.shown[i] {
+            return Ok(());
         }
+        let shown_at = match d.targets[i].kind {
+            TargetKind::Word => 0,
+            TargetKind::Sentence => d.t0.elapsed().as_nanos() as i64,
+        };
+        self.store.add_target(d.id, i, &d.targets[i], shown_at)?;
+        d.shown[i] = true;
         Ok(())
     }
 

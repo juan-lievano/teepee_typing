@@ -40,7 +40,7 @@ impl Mode for Practice {
 
     fn after(&self, outcome: &Outcome) -> Vec<Followup> {
         match outcome {
-            Outcome::Failed { .. } => vec![Followup {
+            Outcome::Failed { .. } | Outcome::Afk { .. } => vec![Followup {
                 mode: Box::new(Practice::new(self.word.clone(), self.reps)),
                 child: true,
             }],

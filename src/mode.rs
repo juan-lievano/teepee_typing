@@ -71,6 +71,8 @@ pub enum Outcome {
     /// `word` is the word that caused the failure: the target itself for a
     /// word target, the offending word for a sentence.
     Failed { target_idx: usize, target: Target, word: String },
+    /// A long pause mid-drill; the drill is void and its mode restarts.
+    Afk { target_idx: usize },
     Aborted,
 }
 
@@ -79,6 +81,7 @@ impl Outcome {
         match self {
             Outcome::Completed => "completed",
             Outcome::Failed { .. } => "failed",
+            Outcome::Afk { .. } => "afk",
             Outcome::Aborted => "aborted",
         }
     }

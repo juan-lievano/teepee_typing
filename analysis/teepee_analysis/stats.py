@@ -54,6 +54,7 @@ FROM tp.targets t
 JOIN first f ON f.drill_id = t.drill_id AND f.target_idx = t.idx
 JOIN tp.drills d ON d.id = t.drill_id
 WHERE t.kind = 'word' AND t.completed_at_ns IS NOT NULL AND d.mode <> 'practice'
+  AND d.outcome <> 'afk'
   AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 GROUP BY 1 HAVING n >= $min ORDER BY ms_per_char DESC LIMIT 40
 """
@@ -67,7 +68,7 @@ WITH k AS (
          lag(correct, 2) OVER w AS ok1, lag(correct, 1) OVER w AS ok2,
          t_ns - lag(t_ns, 1) OVER w AS dt
   FROM tp.keystrokes
-  WHERE drill_id IN (SELECT id FROM tp.drills d WHERE true $tagfilter_d)
+  WHERE drill_id IN (SELECT id FROM tp.drills d WHERE coalesce(d.outcome, '') <> 'afk' $tagfilter_d)
   WINDOW w AS (PARTITION BY drill_id ORDER BY seq)
 )
 SELECT replace(c1 || c2 || typed, ' ', '␣') AS trigram, count(*) AS n,
