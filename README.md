@@ -61,9 +61,10 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 ## Data
 
 `~/.local/share/teepee_typing/teepee.db` (override with `TEEPEE_DATA_DIR`).
-Every exit writes a consistent snapshot to `~/Documents/teepee_typing_backups/teepee-YYYY-MM-DD.db`
-(one per day, overwritten, the newest 14 kept), where iCloud picks it up. The live
-database is not synced on purpose: a WAL database mid-write is not safe to sync.
+Every exit writes a consistent snapshot to `backups/teepee-YYYY-MM-DD.db` in the
+repo checkout the binary was built from (gitignored; one per day, overwritten,
+the newest 14 kept). The live database is not synced on purpose: a WAL database
+mid-write is not safe to sync, a closed snapshot is.
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
