@@ -256,10 +256,14 @@ fn run(
     afk: std::time::Duration,
     first: Vec<Box<dyn Mode>>,
 ) -> Result<()> {
+    use ratatui::crossterm::{cursor::SetCursorStyle, execute};
     let terminal = ratatui::init();
+    // Thin caret; the app positions it under the next character to type.
+    let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
     let rx = input::spawn();
     let mut kernel = Kernel { store, rx, terminal, tags, afk };
     let result = kernel.run(first);
+    let _ = execute!(std::io::stdout(), SetCursorStyle::DefaultUserShape);
     ratatui::restore();
     result
 }

@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::Paragraph;
 
 use crate::input::Stamped;
 use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind};
@@ -312,20 +312,21 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
     }
 
     let column = centered(body, 72);
-    let text = match d.targets[d.cur].kind {
-        TargetKind::Word => words_text(d),
-        TargetKind::Sentence => sentence_text(d),
-    };
-    let chars: usize = text.iter().map(Line::width).sum();
-    let para = Paragraph::new(text).wrap(Wrap { trim: false });
-    // Vertically centre a short text, keep long ones top-aligned (estimate).
-    let lines = (chars / column.width.max(1) as usize + 1) as u16;
-    let area = if lines < column.height {
-        Rect { y: column.y + (column.height - lines) / 2, height: lines, ..column }
+    let (lines, caret) = wrap(d, column.width.max(1) as usize);
+    // Vertically centre a short text, keep long ones top-aligned.
+    let n = lines.len() as u16;
+    let area = if n < column.height {
+        Rect { y: column.y + (column.height - n) / 2, height: n, ..column }
     } else {
         column
     };
-    f.render_widget(para, area);
+    f.render_widget(Paragraph::new(lines), area);
+    if let Some((row, col)) = caret
+        && row < area.height
+    {
+        // The terminal draws its own caret here (a steady bar, set at startup).
+        f.set_cursor_position((area.x + col, area.y + row));
+    }
 
     let wpm = match d.first_key {
         Some(t) if t.elapsed().as_secs_f64() > 0.5 => {
@@ -346,7 +347,7 @@ fn centered(area: Rect, max_width: u16) -> Rect {
     mid
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Glyph {
     Done,
     Wrong,
@@ -358,8 +359,7 @@ fn style(g: Glyph) -> Style {
     match g {
         Glyph::Done => Style::default(),
         Glyph::Wrong => Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
-        Glyph::Cursor => Style::default().add_modifier(Modifier::UNDERLINED),
-        Glyph::Pending => Style::default().fg(Color::DarkGray),
+        Glyph::Cursor | Glyph::Pending => Style::default().fg(Color::DarkGray),
     }
 }
 
@@ -381,28 +381,51 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
                 Glyph::Pending
             };
             // Show the wrong key itself where one was typed, so you see what happened.
-            let shown = if matches!(g, Glyph::Wrong) && c != ' ' { d.typed[p] } else { c };
+            let shown = if g == Glyph::Wrong && c != ' ' { d.typed[p] } else { c };
             (shown, g)
         })
         .collect()
 }
 
-/// All words of the drill as one wrapped paragraph, Monkeytype style.
-fn words_text(d: &Drill) -> Vec<Line<'static>> {
-    let mut spans = Vec::new();
-    for i in 0..d.targets.len() {
-        for (c, g) in glyphs(d, i) {
-            spans.push(Span::styled(c.to_string(), style(g)));
+/// Greedy word wrap of what is on screen (all words, or the current
+/// sentence) into lines of `width`, plus the (row, col) of the caret.
+/// Done by hand so the caret position is exact.
+fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+    // Tokens are "word plus trailing space"; a line never breaks inside one.
+    let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
+    let shown: Vec<usize> = match d.targets[d.cur].kind {
+        TargetKind::Word => (0..d.targets.len()).collect(),
+        TargetKind::Sentence => vec![d.cur],
+    };
+    for i in shown {
+        let mut tok = Vec::new();
+        for g in glyphs(d, i) {
+            let is_space = g.0 == ' ';
+            tok.push(g);
+            if is_space {
+                tokens.push(std::mem::take(&mut tok));
+            }
+        }
+        if !tok.is_empty() {
+            tokens.push(tok);
         }
     }
-    vec![Line::from(spans)]
-}
 
-/// Only the current sentence.
-fn sentence_text(d: &Drill) -> Vec<Line<'static>> {
-    let spans = glyphs(d, d.cur)
-        .into_iter()
-        .map(|(c, g)| Span::styled(c.to_string(), style(g)))
-        .collect::<Vec<_>>();
-    vec![Line::from(spans)]
+    let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    let mut col = 0usize;
+    let mut caret = None;
+    for tok in tokens {
+        if col > 0 && col + tok.len() > width {
+            lines.push(Vec::new());
+            col = 0;
+        }
+        for (c, g) in tok {
+            if g == Glyph::Cursor {
+                caret = Some(((lines.len() - 1) as u16, col as u16));
+            }
+            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g)));
+            col += 1;
+        }
+    }
+    (lines.into_iter().map(Line::from).collect(), caret)
 }
