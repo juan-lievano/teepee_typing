@@ -358,7 +358,7 @@ fn style(g: Glyph) -> Style {
     match g {
         Glyph::Done => Style::default(),
         Glyph::Wrong => Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
-        Glyph::Cursor => Style::default().add_modifier(Modifier::REVERSED),
+        Glyph::Cursor => Style::default().add_modifier(Modifier::UNDERLINED),
         Glyph::Pending => Style::default().fg(Color::DarkGray),
     }
 }
