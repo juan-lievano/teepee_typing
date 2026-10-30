@@ -46,8 +46,8 @@ CREATE TABLE IF NOT EXISTS keystrokes (
   target_idx INTEGER NOT NULL,
   pos        INTEGER NOT NULL,             -- index into the target's expected sequence
   expected   TEXT,                         -- NULL when typing past the end
-  typed      TEXT,                         -- NULL for backspace
-  kind       TEXT    NOT NULL,             -- char | backspace | ignored (settle period after a fail)
+  typed      TEXT,                         -- the key; NULL for backspace; a name like ctrl+x for modified/other
+  kind       TEXT    NOT NULL,             -- char | backspace | ignored (settle) | modified (ctrl/alt+key) | other (enter, tab, ...)
   correct    INTEGER,                      -- NULL for backspace
   PRIMARY KEY (drill_id, seq)
 );
@@ -92,6 +92,8 @@ pub struct KeyRow {
     pub pos: i64,
     pub expected: Option<char>,
     pub typed: Option<char>,
+    /// For non-character keys: the key's name, stored in the `typed` column.
+    pub typed_name: Option<String>,
     pub kind: &'static str,
     pub correct: Option<bool>,
 }
@@ -172,7 +174,7 @@ impl Store {
                 k.target_idx,
                 k.pos,
                 k.expected.map(String::from),
-                k.typed.map(String::from),
+                k.typed.map(String::from).or_else(|| k.typed_name.clone()),
                 k.kind,
                 k.correct.map(|b| b as i64),
             ],

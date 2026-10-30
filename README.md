@@ -66,7 +66,7 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 |--------------|-------------|-------|
 | `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome (completed / failed / afk / aborted), failed word, mode config as JSON, tags as JSON array |
 | `targets`    | word or sentence reached | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `pride#1037`; words after a failure get no row |
-| `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`/`backspace`/`ignored`), correct |
+| `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`, `backspace`, `ignored`, `modified` for ctrl/alt combos, `other` for enter/tab/arrows), correct |
 
 `drill_summary` is a view deriving WPM and accuracy from keystrokes.
 Timestamps are taken on a dedicated input thread the moment a key is read.

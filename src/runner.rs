@@ -198,9 +198,19 @@ impl Kernel {
                         d.seq += 1;
                     }
                 }
-                KeyCode::Char(c)
-                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
+                // Ctrl/Alt combos are not typing, but they are evidence (a
+                // home-row modifier that engaged), so they are logged, not judged.
+                KeyCode::Char(c) if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    let name = format!(
+                        "{}{}{c}",
+                        if key.modifiers.contains(KeyModifiers::CONTROL) { "ctrl+" } else { "" },
+                        if key.modifiers.contains(KeyModifiers::ALT) { "alt+" } else { "" },
+                    );
+                    let pos = d.typed.len();
+                    self.record_named(&d, t_ns, pos, name, "modified")?;
+                    d.seq += 1;
+                }
+                KeyCode::Char(c) => {
                     d.first_key.get_or_insert(at);
                     let pos = d.typed.len();
                     let exp = &d.expected[d.cur];
@@ -254,9 +264,31 @@ impl Kernel {
                         }
                     }
                 }
-                _ => {}
+                // Anything else (enter, tab, arrows, ...) is logged the same way.
+                other => {
+                    let pos = d.typed.len();
+                    self.record_named(&d, t_ns, pos, format!("{other:?}").to_lowercase(), "other")?;
+                    d.seq += 1;
+                }
             }
         }
+    }
+
+    /// A keystroke row for a key that is not a typed character: `typed` holds
+    /// its name (e.g. `ctrl+x`, `enter`), `correct` is NULL.
+    fn record_named(&self, d: &Drill, t_ns: i64, pos: usize, name: String, kind: &'static str) -> Result<()> {
+        let row = KeyRow {
+            seq: d.seq,
+            t_ns,
+            target_idx: d.cur as i64,
+            pos: pos as i64,
+            expected: d.expected[d.cur].get(pos).copied(),
+            typed_name: Some(name),
+            typed: None,
+            kind,
+            correct: None,
+        };
+        self.store.add_key(d.id, &row)
     }
 
     /// Write the row for the current target when it becomes current. Words
@@ -292,6 +324,7 @@ impl Kernel {
             pos: pos as i64,
             expected: d.expected[d.cur].get(pos).copied(),
             typed,
+            typed_name: None,
             kind,
             correct,
         };
