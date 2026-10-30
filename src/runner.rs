@@ -25,12 +25,12 @@ use crate::store::{KeyRow, Store};
 /// "Hopper navy, ice caret": the box takes the user's terminal palette
 /// (a dark navy lifted a step, the terminal's cursor blue as caret, its
 /// foreground as typed text). Faint text is blended from the box toward
-/// the typed colour to read at 3.4:1. Hardcoded on purpose.
+/// the typed colour to read at 4.3:1. Hardcoded on purpose.
 mod theme {
     use ratatui::style::Color;
     pub const BG: Color = Color::Rgb(0x1c, 0x2a, 0x40); // box
     pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // caret, accents
-    pub const SUB: Color = Color::Rgb(0x72, 0x7e, 0x7a); // untyped text
+    pub const SUB: Color = Color::Rgb(0x84, 0x8f, 0x86); // untyped text, 4.3:1 on the box
     pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
     pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
     /// The character on the caret: deeper than the box so it cuts out cleanly.
