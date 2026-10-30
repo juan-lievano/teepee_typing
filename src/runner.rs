@@ -375,12 +375,15 @@ enum Glyph {
     Pending,
 }
 
+/// Everything in the box is bold: heavier strokes read larger at the same
+/// cell size, which is the lever a terminal app has.
 fn style(g: Glyph) -> Style {
+    let s = Style::default().add_modifier(Modifier::BOLD);
     match g {
-        Glyph::Done => Style::default().fg(theme::TEXT),
-        Glyph::Wrong => Style::default().fg(theme::ERROR),
-        Glyph::Pending => Style::default().fg(theme::SUB),
-        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN).add_modifier(Modifier::BOLD),
+        Glyph::Done => s.fg(theme::TEXT),
+        Glyph::Wrong => s.fg(theme::ERROR),
+        Glyph::Pending => s.fg(theme::SUB),
+        Glyph::Cursor => s.fg(theme::ON_CARET).bg(theme::MAIN),
     }
 }
 
