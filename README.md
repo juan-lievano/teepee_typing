@@ -36,8 +36,9 @@ Keys that arrive in the first moments after a failure, before your hands have
 been still for 400 ms, are ignored (and logged as `ignored`), so the tail of
 the word you were typing cannot fail the practice drill.
 
-The text sits in a padded box painted in Monkeytype's default theme (Serika
-Dark), with a block caret; the rest of the screen is your terminal.
+The text sits in a padded navy box with an ice-blue block caret (colours
+from the author's terminal palette, hardcoded in `src/runner.rs`); the rest
+of the screen is your terminal.
 
 ## Modes and strictness
 

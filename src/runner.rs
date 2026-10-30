@@ -22,14 +22,17 @@ use crate::input::Stamped;
 use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind};
 use crate::store::{KeyRow, Store};
 
-/// Monkeytype's default theme, Serika Dark. Hardcoded on purpose.
+/// "Hopper navy, ice caret": the box takes the user's terminal palette
+/// (a dark navy lifted a step, the terminal's cursor blue as caret, its
+/// foreground as typed text). Faint text is blended from the box toward
+/// the typed colour to read at 3.4:1. Hardcoded on purpose.
 mod theme {
     use ratatui::style::Color;
-    pub const BG: Color = Color::Rgb(0x32, 0x34, 0x37);
-    pub const MAIN: Color = Color::Rgb(0xe2, 0xb7, 0x14); // caret, accents
-    pub const SUB: Color = Color::Rgb(0x64, 0x66, 0x69); // untyped text, chrome
-    pub const TEXT: Color = Color::Rgb(0xd1, 0xd0, 0xc5); // typed text
-    pub const ERROR: Color = Color::Rgb(0xca, 0x47, 0x54);
+    pub const BG: Color = Color::Rgb(0x1c, 0x2a, 0x40); // box
+    pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // caret, accents
+    pub const SUB: Color = Color::Rgb(0x72, 0x7e, 0x7a); // untyped text
+    pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
+    pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
 }
 
 pub struct Kernel {
