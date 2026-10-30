@@ -260,7 +260,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
     f.render_widget(
         Line::from(vec![
             Span::raw(format!(" {}", d.mode.title())).dim(),
-            Span::raw(if d.tags.is_empty() { String::new() } else { format!("  tags: {}", d.tags) }).cyan().bold(),
+            Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) }).cyan().bold(),
             Span::raw("  esc quits").dark_gray(),
         ]),
         header,

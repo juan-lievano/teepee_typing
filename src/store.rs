@@ -23,6 +23,11 @@ CREATE TABLE IF NOT EXISTS drills (
   tags          TEXT    NOT NULL DEFAULT '[]'  -- JSON array, e.g. ["voyager"]
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS targets (
   drill_id        INTEGER NOT NULL REFERENCES drills(id),
   idx             INTEGER NOT NULL,
@@ -173,6 +178,56 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Tags set by the last `--tag`; they stay until changed.
+    pub fn current_tags(&self) -> Result<Vec<String>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'tags'", [], |r| r.get(0))
+            .optional()?;
+        Ok(raw.map(|j| serde_json::from_str(&j)).transpose()?.unwrap_or_default())
+    }
+
+    pub fn set_current_tags(&self, tags: &[String]) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('tags', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![Value::from(tags).to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Drills started in `[from_ms, to_ms]` and/or with ids in `[id_lo, id_hi]`
+    /// (either bound may be None), as (id, mode, started_at_ms, tags).
+    pub fn drills_in(
+        &self,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+        id_lo: Option<i64>,
+        id_hi: Option<i64>,
+    ) -> Result<Vec<(i64, String, i64, String)>> {
+        let mut st = self.conn.prepare(
+            "SELECT id, mode, started_at_ms, tags FROM drills
+             WHERE (?1 IS NULL OR started_at_ms >= ?1) AND (?2 IS NULL OR started_at_ms <= ?2)
+               AND (?3 IS NULL OR id >= ?3) AND (?4 IS NULL OR id <= ?4)
+             ORDER BY id",
+        )?;
+        let rows = st
+            .query_map(params![from_ms, to_ms, id_lo, id_hi], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_drill_tags(&self, ids: &[i64], tags: &[String]) -> Result<usize> {
+        let json = Value::from(tags).to_string();
+        let mut n = 0;
+        for id in ids {
+            n += self.conn.execute("UPDATE drills SET tags = ?2 WHERE id = ?1", params![id, json])?;
+        }
+        Ok(n)
     }
 
     /// Highest sentence number of `book` that was typed to completion.

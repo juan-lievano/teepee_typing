@@ -23,8 +23,8 @@ use crate::store::Store;
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// Label stored on every drill of this session, e.g. the keyboard.
-    /// Repeatable. Defaults to the comma-separated `TEEPEE_TAGS` env var.
+    /// Set the tags stored on every drill from now on, e.g. the keyboard.
+    /// Repeatable; `--tag none` clears. Tags stay until changed.
     #[arg(long, global = true)]
     tag: Vec<String>,
 }
@@ -57,6 +57,23 @@ enum Cmd {
     },
     /// List available books.
     Books,
+    /// Show the current tags.
+    Tags,
+    /// Rewrite the tags of past drills, picked by time window or id range.
+    Retag {
+        /// New tags; `none` clears.
+        #[arg(required = true)]
+        tags: Vec<String>,
+        /// Drills started in the last DURATION, e.g. 30m, 2h, 1d.
+        #[arg(long)]
+        last: Option<String>,
+        /// Drill id range, e.g. 12-30 or 12- or -30 or 17.
+        #[arg(long)]
+        ids: Option<String>,
+        /// Show what would change without writing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Print the data directory.
     Data,
 }
@@ -64,12 +81,15 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Master { words: 50, reps: 10 });
-    let mut tags = cli.tag;
-    if tags.is_empty() && let Ok(env) = std::env::var("TEEPEE_TAGS") {
-        tags = env.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect();
-    }
-    tags.sort();
-    tags.dedup();
+    let store = Store::open(&paths::db_path())?;
+    let tags = match cli.tag.is_empty() {
+        true => store.current_tags()?,
+        false => {
+            let t = normalise_tags(cli.tag);
+            store.set_current_tags(&t)?;
+            t
+        }
+    };
 
     match cmd {
         Cmd::Data => {
@@ -97,12 +117,51 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Cmd::Tags => {
+            println!("{}", describe_tags(&tags));
+            Ok(())
+        }
+        Cmd::Retag { tags: new, last, ids, dry_run } => {
+            if last.is_none() && ids.is_none() {
+                bail!("say which drills: --last 2h and/or --ids 12-30");
+            }
+            let new = normalise_tags(new);
+            let from_ms = last.as_deref().map(parse_duration_ms).transpose()?.map(|d| now_ms() - d);
+            let (lo, hi) = match ids.as_deref() {
+                Some(r) => parse_id_range(r)?,
+                None => (None, None),
+            };
+            let rows = store.drills_in(from_ms, None, lo, hi)?;
+            if rows.is_empty() {
+                println!("no drills matched");
+                return Ok(());
+            }
+            let (first, last_row) = (&rows[0], &rows[rows.len() - 1]);
+            println!(
+                "{} drills, ids {}..{}, {} → {}",
+                rows.len(),
+                first.0,
+                last_row.0,
+                fmt_ms(first.2),
+                fmt_ms(last_row.2)
+            );
+            let mut before: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+            before.sort();
+            before.dedup();
+            println!("current tags: {}    new tags: {}", before.join(" "), describe_tags(&new));
+            if dry_run {
+                println!("dry run, nothing written");
+                return Ok(());
+            }
+            let ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
+            let n = store.set_drill_tags(&ids, &new)?;
+            println!("retagged {n} drills");
+            Ok(())
+        }
         Cmd::Master { words, reps } => {
-            let store = Store::open(&paths::db_path())?;
             run(store, tags, vec![Box::new(Master::new(words::english_10k(), words, reps))])
         }
         Cmd::Lit { book, sentences, strict, reps } => {
-            let store = Store::open(&paths::db_path())?;
             let path = paths::books_dir().join(format!("{book}.txt"));
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {} (see `teepee books`)", path.display()))?;
@@ -118,6 +177,63 @@ fn main() -> Result<()> {
             }
             let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, reps);
             run(store, tags, vec![Box::new(mode)])
+        }
+    }
+}
+
+/// Sorted, deduplicated; `none` means no tags.
+fn normalise_tags(tags: Vec<String>) -> Vec<String> {
+    let mut t: Vec<String> = tags
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "none")
+        .collect();
+    t.sort();
+    t.dedup();
+    t
+}
+
+fn describe_tags(tags: &[String]) -> String {
+    if tags.is_empty() { "none".to_string() } else { tags.join(" ") }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn fmt_ms(ms: i64) -> String {
+    // Local-time rendering without a tz crate: show minutes ago.
+    let ago = (now_ms() - ms).max(0) / 60_000;
+    if ago < 120 { format!("{ago}m ago") } else { format!("{}h ago", ago / 60) }
+}
+
+/// "30m", "2h", "1d", or bare minutes.
+fn parse_duration_ms(s: &str) -> Result<i64> {
+    let s = s.trim();
+    let (num, unit) = s.split_at(s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len()));
+    let n: i64 = num.parse().with_context(|| format!("bad duration {s:?}"))?;
+    let mult = match unit {
+        "" | "m" | "min" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        _ => bail!("bad duration unit in {s:?} (use m, h or d)"),
+    };
+    Ok(n * mult)
+}
+
+/// "12-30", "12-", "-30" or "17".
+fn parse_id_range(s: &str) -> Result<(Option<i64>, Option<i64>)> {
+    let parse = |p: &str| -> Result<Option<i64>> {
+        Ok(if p.is_empty() { None } else { Some(p.parse().with_context(|| format!("bad id {p:?}"))?) })
+    };
+    match s.split_once('-') {
+        Some((a, b)) => Ok((parse(a.trim())?, parse(b.trim())?)),
+        None => {
+            let id = parse(s.trim())?;
+            Ok((id, id))
         }
     }
 }

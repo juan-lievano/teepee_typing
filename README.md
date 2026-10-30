@@ -11,15 +11,19 @@ teepee                       # master mode: 50 random words from english 10k
 teepee master --words 30     # shorter drills
 teepee lit pride             # a book, one sentence at a time (expert strictness)
 teepee lit pride --strict lenient
-teepee --tag voyager         # label this session's drills (repeatable)
+teepee --tag voyager         # tag every drill from now on (sticky); --tag none clears
+teepee tags                  # current tags
+teepee retag laptop --last 2h        # fix the tags on the last two hours of drills
+teepee retag none --ids 120-140 --dry-run
 teepee books                 # books you have prepared
 teepee data                  # where the database lives
 ```
 
 Tags mark things the data can't know on its own, like which keyboard you
-used. `--tag` is repeatable, and `TEEPEE_TAGS=voyager,desk` in the
-environment is the default when no flag is given, so a shell alias per setup
-works. Stats take `--tag` to filter.
+used. A tag set with `--tag` stays on for every later launch until you set a
+different one or `--tag none`; the header always shows the current state.
+`retag` rewrites past drills picked by `--last 2h` and/or `--ids 12-30`.
+Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then typed ten times and a fresh drill starts, with no menu in between.
