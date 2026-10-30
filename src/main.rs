@@ -81,8 +81,6 @@ enum Cmd {
     },
     /// Print the data directory.
     Data,
-    /// Write a snapshot of the database to the backups folder (also done on every exit).
-    Backup,
     /// Delete the database (drills, keystrokes, tags). Books are kept.
     Reset {
         /// Skip the confirmation prompt.
@@ -136,10 +134,6 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Reset { .. } => unreachable!("handled above"),
-        Cmd::Backup => {
-            println!("{}", store.snapshot(&paths::backup_dir())?.display());
-            Ok(())
-        }
         Cmd::Tags => {
             println!("{}", describe_tags(&tags));
             Ok(())

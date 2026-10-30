@@ -19,7 +19,6 @@ teepee retag laptop --last 2h        # fix the tags on the last two hours of dri
 teepee retag none --ids 120-140 --dry-run
 teepee books                 # books you have prepared
 teepee data                  # where the database lives
-teepee backup                # snapshot to ~/Documents/teepee_typing_backups (also on every exit)
 teepee reset                 # delete the database (asks first); books are kept
 ```
 
@@ -63,8 +62,8 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 
 `~/.local/share/teepee_typing/teepee.db` (override with `TEEPEE_DATA_DIR`).
 Every exit writes a consistent snapshot to `~/Documents/teepee_typing_backups/teepee-YYYY-MM-DD.db`
-(one per day, overwritten), where iCloud picks it up; `teepee backup` does it on demand.
-The live database is not synced on purpose: a WAL database mid-write is not safe to sync.
+(one per day, overwritten, the newest 14 kept), where iCloud picks it up. The live
+database is not synced on purpose: a WAL database mid-write is not safe to sync.
 
 | table        | one row per | notes |
 |--------------|-------------|-------|

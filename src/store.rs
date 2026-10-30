@@ -68,6 +68,24 @@ FROM drills d LEFT JOIN keystrokes k ON k.drill_id = d.id
 GROUP BY d.id;
 "#;
 
+/// Keep only the newest `keep` daily snapshots in `dir`.
+fn prune_snapshots(dir: &Path, keep: usize) -> Result<()> {
+    let mut snaps: Vec<_> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("teepee-") && n.ends_with(".db"))
+        })
+        .collect();
+    snaps.sort(); // names carry the date, so lexical order is chronological
+    for old in snaps.iter().rev().skip(keep) {
+        std::fs::remove_file(old)?;
+    }
+    Ok(())
+}
+
 /// Columns added after the first release; each is applied once.
 fn migrate(conn: &Connection) -> Result<()> {
     let has_failed_word = conn
@@ -253,6 +271,7 @@ impl Store {
         }
         drop(out);
         std::fs::rename(&tmp, &dest)?;
+        prune_snapshots(dir, 14)?;
         Ok(dest)
     }
 
