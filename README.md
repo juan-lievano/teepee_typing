@@ -14,6 +14,7 @@ teepee master --keep-case    # keep "February", "I"; default lowercases like Mon
 teepee lit pride             # a book, one sentence at a time (expert strictness)
 teepee lit pride --strict lenient
 teepee --tag voyager         # tag every drill from now on (sticky); --tag none clears
+teepee --caret block         # caret shape: bar (thin, default), block, underline; sticky
 teepee tags                  # current tags
 teepee retag laptop --last 2h        # fix the tags on the last two hours of drills
 teepee retag none --ids 120-140 --dry-run

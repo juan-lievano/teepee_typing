@@ -22,12 +22,43 @@ use crate::input::Stamped;
 use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind};
 use crate::store::{KeyRow, Store};
 
+/// How the next character to type is marked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Caret {
+    /// The terminal's own cursor as a thin steady bar before the character.
+    Bar,
+    /// The character cell in reverse video.
+    Block,
+    /// The character underlined.
+    Underline,
+}
+
+impl Caret {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Caret::Bar => "bar",
+            Caret::Block => "block",
+            Caret::Underline => "underline",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Caret> {
+        match s {
+            "bar" => Some(Caret::Bar),
+            "block" => Some(Caret::Block),
+            "underline" => Some(Caret::Underline),
+            _ => None,
+        }
+    }
+}
+
 pub struct Kernel {
     pub store: Store,
     pub rx: Receiver<Stamped>,
     pub terminal: DefaultTerminal,
     /// A gap this long between two keys voids the drill (outcome `afk`).
     pub afk: Duration,
+    pub caret: Caret,
     /// Session labels (keyboard, place, ...) stamped on every drill.
     pub tags: Vec<String>,
 }
@@ -54,6 +85,7 @@ struct Drill<'a> {
     correct_chars: usize,
     banner: Option<String>,
     tags: String,
+    caret: Caret,
     /// While set, keys arriving sooner than SETTLE after the previous one are
     /// ignored; cleared by the first key that arrives after a quiet gap.
     settle_last_input: Option<Instant>,
@@ -112,6 +144,7 @@ impl Kernel {
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
+            caret: self.caret,
         };
         let strictness = d.mode.strictness();
 
@@ -312,7 +345,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
     }
 
     let column = centered(body, 72);
-    let (lines, caret) = wrap(d, column.width.max(1) as usize);
+    let (lines, caret) = wrap(d, column.width.max(1) as usize, d.caret);
     // Vertically centre a short text, keep long ones top-aligned.
     let n = lines.len() as u16;
     let area = if n < column.height {
@@ -321,7 +354,8 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
         column
     };
     f.render_widget(Paragraph::new(lines), area);
-    if let Some((row, col)) = caret
+    if d.caret == Caret::Bar
+        && let Some((row, col)) = caret
         && row < area.height
     {
         // The terminal draws its own caret here (a steady bar, set at startup).
@@ -355,11 +389,18 @@ enum Glyph {
     Pending,
 }
 
-fn style(g: Glyph) -> Style {
+fn style(g: Glyph, caret: Caret) -> Style {
     match g {
         Glyph::Done => Style::default(),
         Glyph::Wrong => Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
-        Glyph::Cursor | Glyph::Pending => Style::default().fg(Color::DarkGray),
+        Glyph::Pending => Style::default().fg(Color::DarkGray),
+        Glyph::Cursor => match caret {
+            // The terminal draws the bar; the cell itself looks pending.
+            Caret::Bar => Style::default().fg(Color::DarkGray),
+            // Full-contrast block: background on the terminal's foreground.
+            Caret::Block => Style::default().add_modifier(Modifier::REVERSED),
+            Caret::Underline => Style::default().add_modifier(Modifier::UNDERLINED),
+        },
     }
 }
 
@@ -390,7 +431,7 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
 /// Greedy word wrap of what is on screen (all words, or the current
 /// sentence) into lines of `width`, plus the (row, col) of the caret.
 /// Done by hand so the caret position is exact.
-fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
+fn wrap(d: &Drill, width: usize, shape: Caret) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
     // Tokens are "word plus trailing space"; a line never breaks inside one.
     let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
     let shown: Vec<usize> = match d.targets[d.cur].kind {
@@ -423,7 +464,7 @@ fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, Option<(u16, u16)>) {
             if g == Glyph::Cursor {
                 caret = Some(((lines.len() - 1) as u16, col as u16));
             }
-            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g)));
+            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g, shape)));
             col += 1;
         }
     }

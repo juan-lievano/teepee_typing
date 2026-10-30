@@ -180,22 +180,29 @@ impl Store {
         Ok(())
     }
 
+    pub fn setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()?)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// Tags set by the last `--tag`; they stay until changed.
     pub fn current_tags(&self) -> Result<Vec<String>> {
-        let raw: Option<String> = self
-            .conn
-            .query_row("SELECT value FROM settings WHERE key = 'tags'", [], |r| r.get(0))
-            .optional()?;
-        Ok(raw.map(|j| serde_json::from_str(&j)).transpose()?.unwrap_or_default())
+        Ok(self.setting("tags")?.map(|j| serde_json::from_str(&j)).transpose()?.unwrap_or_default())
     }
 
     pub fn set_current_tags(&self, tags: &[String]) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO settings (key, value) VALUES ('tags', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![Value::from(tags).to_string()],
-        )?;
-        Ok(())
+        self.set_setting("tags", &Value::from(tags).to_string())
     }
 
     /// Drills started in `[from_ms, to_ms]` and/or with ids in `[id_lo, id_hi]`
