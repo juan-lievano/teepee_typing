@@ -68,24 +68,6 @@ FROM drills d LEFT JOIN keystrokes k ON k.drill_id = d.id
 GROUP BY d.id;
 "#;
 
-/// Keep only the newest `keep` daily snapshots in `dir`.
-fn prune_snapshots(dir: &Path, keep: usize) -> Result<()> {
-    let mut snaps: Vec<_> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("teepee-") && n.ends_with(".db"))
-        })
-        .collect();
-    snaps.sort(); // names carry the date, so lexical order is chronological
-    for old in snaps.iter().rev().skip(keep) {
-        std::fs::remove_file(old)?;
-    }
-    Ok(())
-}
-
 /// Columns added after the first release; each is applied once.
 fn migrate(conn: &Connection) -> Result<()> {
     let has_failed_word = conn
@@ -127,8 +109,8 @@ impl Store {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
+            "PRAGMA journal_mode = DELETE;
+             PRAGMA synchronous = FULL;
              PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
@@ -255,24 +237,6 @@ impl Store {
             n += self.conn.execute("UPDATE drills SET tags = ?2 WHERE id = ?1", params![id, json])?;
         }
         Ok(n)
-    }
-
-    /// Consistent snapshot of the whole database (SQLite's online backup API)
-    /// to `<dir>/teepee-YYYY-MM-DD.db`, overwriting today's. Returns the path.
-    pub fn snapshot(&self, dir: &Path) -> Result<std::path::PathBuf> {
-        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        let day: String = self.conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))?;
-        let dest = dir.join(format!("teepee-{day}.db"));
-        let tmp = dir.join(format!("teepee-{day}.db.part"));
-        let mut out = Connection::open(&tmp)?;
-        {
-            let backup = rusqlite::backup::Backup::new(&self.conn, &mut out)?;
-            backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
-        }
-        drop(out);
-        std::fs::rename(&tmp, &dest)?;
-        prune_snapshots(dir, 14)?;
-        Ok(dest)
     }
 
     /// Highest sentence number of `book` that was typed to completion.

@@ -219,7 +219,7 @@ fn reset(yes: bool) -> Result<()> {
             return Ok(());
         }
     }
-    for suffix in ["", "-wal", "-shm"] {
+    for suffix in ["", "-journal", "-wal", "-shm"] {
         let p = db.with_file_name(format!("teepee.db{suffix}"));
         if p.exists() {
             std::fs::remove_file(&p).with_context(|| format!("removing {}", p.display()))?;
@@ -297,9 +297,5 @@ fn run(
     let mut kernel = Kernel { store, rx, terminal, tags, afk };
     let result = kernel.run(first);
     ratatui::restore();
-    // Snapshot on the way out so the synced copy is never more than a session old.
-    if let Err(e) = kernel.store.snapshot(&paths::backup_dir()) {
-        eprintln!("backup failed: {e:#}");
-    }
     result
 }

@@ -18,7 +18,7 @@ teepee tags                  # current tags
 teepee retag laptop --last 2h        # fix the tags on the last two hours of drills
 teepee retag none --ids 120-140 --dry-run
 teepee books                 # books you have prepared
-teepee data                  # where the database lives
+teepee data                  # where the database lives (data/ in the repo)
 teepee reset                 # delete the database (asks first); books are kept
 ```
 
@@ -60,11 +60,10 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 
 ## Data
 
-`~/.local/share/teepee_typing/teepee.db` (override with `TEEPEE_DATA_DIR`).
-Every exit writes a consistent snapshot to `backups/teepee-YYYY-MM-DD.db` in the
-repo checkout the binary was built from (gitignored; one per day, overwritten,
-the newest 14 kept). The live database is not synced on purpose: a WAL database
-mid-write is not safe to sync, a closed snapshot is.
+`data/teepee.db` in the repo checkout (gitignored; `teepee data` prints the
+path, `TEEPEE_DATA_DIR` overrides it). Every keystroke is written as it
+happens, in single-file journal mode, so the file is always consistent and
+whatever syncs the checkout syncs the data.
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
