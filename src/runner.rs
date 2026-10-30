@@ -14,7 +14,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Color, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -134,7 +134,23 @@ impl Kernel {
             self.mark_shown(&mut d)?;
             self.terminal.draw(|f| draw(f, &d))?;
 
-            let Stamped { at, event } = self.rx.recv()?;
+            // While settling, wake up when the quiet period completes so the
+            // fade lifts even if no key arrives.
+            let stamped = match d.settle_last_input {
+                Some(last) => {
+                    let remaining = SETTLE.saturating_sub(last.elapsed());
+                    match self.rx.recv_timeout(remaining) {
+                        Ok(st) => st,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                            d.settle_last_input = None;
+                            continue;
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                None => self.rx.recv()?,
+            };
+            let Stamped { at, event } = stamped;
             let Event::Key(key) = event else { continue };
             if key.kind != KeyEventKind::Press {
                 continue;
@@ -392,12 +408,22 @@ enum Glyph {
     Pending,
 }
 
-fn style(g: Glyph) -> Style {
+/// Pull a colour toward the box background; `t` = 0 leaves it, 1 hides it.
+fn toward_bg(c: Color, t: f32) -> Color {
+    let (Color::Rgb(r, g, b), Color::Rgb(br, bg, bb)) = (c, theme::BG) else { return c };
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
+}
+
+/// `faded` is the settle period after a failure: the box is on screen but
+/// keys are ignored, and everything in it sits closer to the background.
+fn style(g: Glyph, faded: bool) -> Style {
+    let t = if faded { 0.6 } else { 0.0 };
     match g {
-        Glyph::Done => Style::default().fg(theme::TEXT),
-        Glyph::Wrong => Style::default().fg(theme::ERROR),
-        Glyph::Pending => Style::default().fg(theme::SUB),
-        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN),
+        Glyph::Done => Style::default().fg(toward_bg(theme::TEXT, t)),
+        Glyph::Wrong => Style::default().fg(toward_bg(theme::ERROR, t)),
+        Glyph::Pending => Style::default().fg(toward_bg(theme::SUB, t)),
+        Glyph::Cursor => Style::default().fg(toward_bg(theme::ON_CARET, t)).bg(toward_bg(theme::MAIN, t)),
     }
 }
 
@@ -429,6 +455,7 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
 /// sentence) into lines of `width`, plus the index of the line holding the
 /// caret. Done by hand so the window and the box can be sized.
 fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize) {
+    let faded = d.settle_last_input.is_some();
     // Tokens are "word plus trailing space"; a line never breaks inside one.
     let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
     let shown: Vec<usize> = match d.targets[d.cur].kind {
@@ -461,7 +488,7 @@ fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize) {
             if g == Glyph::Cursor {
                 caret_line = lines.len() - 1;
             }
-            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g)));
+            lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g, faded)));
             col += 1;
         }
     }
