@@ -1,9 +1,13 @@
-"""teepee-stats: one report over the keystroke log, or a progress graph.
+"""teepee-stats: one report over the keystroke log.
 
-    teepee-stats                 the report: overview, recent master drills, missed words, slow words, slow trigrams
-    teepee-stats graph           master-mode progress over drills, drawn inline in the terminal (--open for a viewer)
-    options: --tag X  only drills tagged X      --days N  look back N days (default 90)
-             --min N  minimum occurrences for words and trigrams (default 5)
+The progress graph (wpm per master drill, rolling per-word survival) is drawn
+inline in the terminal, then the tables: overview, recent master drills,
+missed words, slow words, slow trigrams.
+
+    --tag X    only drills tagged X          --days N   look back N days (default 90)
+    --min N    minimum occurrences for the word and trigram tables (default 5)
+    --open     show the graph in the image viewer instead of inline
+    --no-graph tables only
 """
 import argparse
 import os
@@ -13,7 +17,7 @@ from pathlib import Path
 
 import polars as pl
 
-from .db import connect, data_dir
+from .db import connect
 
 # ------------------------------------------------------------------ queries
 # $days, $min, $tagfilter_d are substituted before running. The SQLite view
@@ -157,6 +161,8 @@ def report(a):
     if drills.is_empty():
         print("no drills yet")
         return
+    if not a.no_graph:
+        graph(a, drills)
     judged = drills.filter(pl.col("outcome").is_in(["failed", "completed"]))
     minutes = judged["secs"].fill_null(0).sum() / 60
     section(f"overview · last {a.days} days" + (f" · tag {a.tag}" if a.tag else ""))
@@ -181,16 +187,13 @@ def report(a):
 
 # ------------------------------------------------------------------ graph
 
-def graph(a):
+def graph(a, drills):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    con = connect()
-    drills = frame(con, PER_DRILL, a)
     m = drills.filter((pl.col("mode") == "master") & pl.col("outcome").is_in(["failed", "completed"])).sort("id")
     if m.height < 2:
-        print("need at least two master drills")
         return
     n = m.height
     x = list(range(1, n + 1))
@@ -234,22 +237,26 @@ def graph(a):
     tag = f" · {a.tag}" if a.tag else ""
     fig.suptitle(f"teepee · master mode · {n} drills{tag}", x=0.125, ha="left", color=INK, fontsize=13)
 
-    out = Path(data_dir()) / "progress.png"
-    fig.savefig(out, dpi=160, bbox_inches="tight", facecolor=S)
+    # Nothing is written to disk unless a viewer is needed; the data is the record.
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight", facecolor=S)
     if a.open or not sys.stdout.isatty():
-        print(out)
-        subprocess.run(["open", str(out)], check=False)
+        import tempfile
+        tmp = Path(tempfile.gettempdir()) / "teepee-progress.png"
+        tmp.write_bytes(buf.getvalue())
+        print(tmp)
+        subprocess.run(["open", str(tmp)], check=False)
     else:
-        show_inline(out)
-        print(out)
+        show_inline(buf.getvalue())
 
 
-def show_inline(png: Path) -> None:
+def show_inline(png: bytes) -> None:
     """Draw the PNG in the terminal with the kitty graphics protocol (Ghostty
     supports it). Inside tmux the sequence is wrapped for passthrough, which
     needs `set -g allow-passthrough on`."""
     import base64
-    data = base64.standard_b64encode(png.read_bytes()).decode("ascii")
+    data = base64.standard_b64encode(png).decode("ascii")
     in_tmux = "TMUX" in os.environ
     def esc(payload: str) -> str:
         seq = f"\x1b_G{payload}\x1b\\"
@@ -270,13 +277,13 @@ def show_inline(png: Path) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", nargs="?", choices=["report", "graph"], default="report")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--min", type=int, default=5)
     ap.add_argument("--tag")
-    ap.add_argument("--open", action="store_true", help="graph: open the PNG in the default viewer instead of drawing it inline")
+    ap.add_argument("--open", action="store_true", help="show the graph in the image viewer instead of inline")
+    ap.add_argument("--no-graph", action="store_true", help="tables only")
     a = ap.parse_args()
-    graph(a) if a.what == "graph" else report(a)
+    report(a)
 
 
 if __name__ == "__main__":

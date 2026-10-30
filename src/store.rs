@@ -239,6 +239,23 @@ impl Store {
         Ok(n)
     }
 
+    /// Consistent snapshot of the whole database (SQLite's online backup API)
+    /// to `<dir>/teepee-YYYY-MM-DD.db`, overwriting today's. Returns the path.
+    pub fn snapshot(&self, dir: &Path) -> Result<std::path::PathBuf> {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let day: String = self.conn.query_row("SELECT date('now', 'localtime')", [], |r| r.get(0))?;
+        let dest = dir.join(format!("teepee-{day}.db"));
+        let tmp = dir.join(format!("teepee-{day}.db.part"));
+        let mut out = Connection::open(&tmp)?;
+        {
+            let backup = rusqlite::backup::Backup::new(&self.conn, &mut out)?;
+            backup.run_to_completion(256, std::time::Duration::from_millis(5), None)?;
+        }
+        drop(out);
+        std::fs::rename(&tmp, &dest)?;
+        Ok(dest)
+    }
+
     /// Highest sentence number of `book` that was typed to completion.
     pub fn last_completed_sentence(&self, book: &str) -> Result<Option<usize>> {
         let prefix = format!("{book}#");

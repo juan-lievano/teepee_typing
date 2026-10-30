@@ -81,6 +81,8 @@ enum Cmd {
     },
     /// Print the data directory.
     Data,
+    /// Write a snapshot of the database to the backups folder (also done on every exit).
+    Backup,
     /// Delete the database (drills, keystrokes, tags). Books are kept.
     Reset {
         /// Skip the confirmation prompt.
@@ -134,6 +136,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Reset { .. } => unreachable!("handled above"),
+        Cmd::Backup => {
+            println!("{}", store.snapshot(&paths::backup_dir())?.display());
+            Ok(())
+        }
         Cmd::Tags => {
             println!("{}", describe_tags(&tags));
             Ok(())
@@ -297,5 +303,9 @@ fn run(
     let mut kernel = Kernel { store, rx, terminal, tags, afk };
     let result = kernel.run(first);
     ratatui::restore();
+    // Snapshot on the way out so the synced copy is never more than a session old.
+    if let Err(e) = kernel.store.snapshot(&paths::backup_dir()) {
+        eprintln!("backup failed: {e:#}");
+    }
     result
 }
