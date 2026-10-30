@@ -63,8 +63,7 @@ WITH m AS (
   SELECT d.id, strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day, d.outcome,
          (SELECT count(*) FROM tp.targets t WHERE t.drill_id = d.id AND t.completed_at_ns IS NOT NULL) AS words,
          (SELECT coalesce(sum(k.correct), 0) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char') AS chars,
-         (SELECT coalesce(sum(k.correct), 0) FILTER (WHERE true) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char') / 5.0
-           / nullif((SELECT max(k.t_ns) - min(k.t_ns) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char'), 0) * 60e9 AS wpm
+         (SELECT max(k.t_ns) - min(k.t_ns) FROM tp.keystrokes k WHERE k.drill_id = d.id AND k.kind = 'char') AS span_ns
   FROM tp.drills d
   WHERE d.mode = 'master' AND d.outcome IN ('failed', 'completed')
     AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
@@ -74,7 +73,7 @@ SELECT day, count(*) AS drills, sum(outcome = 'completed') AS finished,
        round(avg(chars), 0) AS mean_chars,
        round(100.0 * sum(words) / nullif(sum(words) + sum(outcome = 'failed'), 0), 1) AS word_survival_pct,
        round(sum(words) * 1.0 / nullif(sum(outcome = 'failed'), 0), 1) AS words_per_fail,
-       round(avg(wpm), 1) AS wpm
+       round(avg(chars / 5.0 / nullif(span_ns, 0) * 60e9), 1) AS wpm
 FROM m GROUP BY 1 ORDER BY 1 DESC LIMIT 60
 """
 
