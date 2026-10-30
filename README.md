@@ -28,7 +28,8 @@ different one or `--tag none`; the header always shows the current state.
 Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
-is then typed ten times and a fresh drill starts, with no menu in between.
+is then practised, repeated until about 50 characters of it have been typed
+(`--practice-chars`), and a fresh drill starts, with no menu in between.
 A pause longer than `--afk` seconds (default 3) between two keys voids the
 drill: it is saved with outcome `afk`, excluded from stats, and the mode
 restarts. Waiting before the first key costs nothing.

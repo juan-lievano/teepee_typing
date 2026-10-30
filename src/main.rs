@@ -35,7 +35,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Random words from the english 10k list; the first wrong key fails the
-    /// drill and the missed word is practised before a fresh drill (default).
+    /// drill and the missed word is practised (~50 characters of it) before a
+    /// fresh drill (default).
     Master {
         /// Word list: english 200, 1k, 5k or 10k.
         #[arg(long, default_value = "10k", value_parser = words::LIST_NAMES.to_vec())]
@@ -43,9 +44,9 @@ enum Cmd {
         /// Words per drill.
         #[arg(long, default_value_t = 50)]
         words: usize,
-        /// Times a missed word is repeated.
-        #[arg(long, default_value_t = 10)]
-        reps: usize,
+        /// Characters of a missed word to practise (reps = chars / word length, rounded up).
+        #[arg(long, default_value_t = 50)]
+        practice_chars: usize,
         /// Keep capitals ("February", "I"). Default lowercases everything,
         /// like Monkeytype with punctuation off.
         #[arg(long)]
@@ -61,9 +62,9 @@ enum Cmd {
         /// How mistakes are judged.
         #[arg(long, value_enum, default_value_t = Strictness::Expert)]
         strict: Strictness,
-        /// Times a missed word is repeated.
-        #[arg(long, default_value_t = 10)]
-        reps: usize,
+        /// Characters of a missed word to practise (reps = chars / word length, rounded up).
+        #[arg(long, default_value_t = 50)]
+        practice_chars: usize,
     },
     /// List available books.
     Books,
@@ -90,7 +91,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, reps: 10, keep_case: false });
+    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, practice_chars: 50, keep_case: false });
     let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
 
     let store = Store::open(&paths::db_path())?;
@@ -170,11 +171,11 @@ fn main() -> Result<()> {
             println!("retagged {n} drills");
             Ok(())
         }
-        Cmd::Master { list, words, reps, keep_case } => {
+        Cmd::Master { list, words, practice_chars, keep_case } => {
             let list = words::list(&list, keep_case).expect("clap validated the list name");
-            run(store, tags, afk, vec![Box::new(Master::new(list, words, reps))])
+            run(store, tags, afk, vec![Box::new(Master::new(list, words, practice_chars))])
         }
-        Cmd::Lit { book, sentences, strict, reps } => {
+        Cmd::Lit { book, sentences, strict, practice_chars } => {
             let path = paths::books_dir().join(format!("{book}.txt"));
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading {} (see `teepee books`)", path.display()))?;
@@ -188,7 +189,7 @@ fn main() -> Result<()> {
                 println!("{book}: all {} sentences done", lines.len());
                 return Ok(());
             }
-            let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, reps);
+            let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, practice_chars);
             run(store, tags, afk, vec![Box::new(mode)])
         }
     }
