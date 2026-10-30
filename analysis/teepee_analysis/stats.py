@@ -1,12 +1,14 @@
 """teepee-stats: one report over the keystroke log, or a progress graph.
 
     teepee-stats                 the report: overview, recent master drills, missed words, slow words, slow trigrams
-    teepee-stats graph           PNG of master-mode progress over drills, opened in the default viewer
+    teepee-stats graph           master-mode progress over drills, drawn inline in the terminal (--open for a viewer)
     options: --tag X  only drills tagged X      --days N  look back N days (default 90)
              --min N  minimum occurrences for words and trigrams (default 5)
 """
 import argparse
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import polars as pl
@@ -234,8 +236,36 @@ def graph(a):
 
     out = Path(data_dir()) / "progress.png"
     fig.savefig(out, dpi=160, bbox_inches="tight", facecolor=S)
-    print(out)
-    subprocess.run(["open", str(out)], check=False)
+    if a.open or not sys.stdout.isatty():
+        print(out)
+        subprocess.run(["open", str(out)], check=False)
+    else:
+        show_inline(out)
+        print(out)
+
+
+def show_inline(png: Path) -> None:
+    """Draw the PNG in the terminal with the kitty graphics protocol (Ghostty
+    supports it). Inside tmux the sequence is wrapped for passthrough, which
+    needs `set -g allow-passthrough on`."""
+    import base64
+    data = base64.standard_b64encode(png.read_bytes()).decode("ascii")
+    in_tmux = "TMUX" in os.environ
+    def esc(payload: str) -> str:
+        seq = f"\x1b_G{payload}\x1b\\"
+        return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\" if in_tmux else seq
+    try:
+        cols = min(os.get_terminal_size().columns - 2, 110)
+    except OSError:
+        cols = 100
+    chunks = [data[i:i + 4096] for i in range(0, len(data), 4096)]
+    out = []
+    for i, chunk in enumerate(chunks):
+        more = 1 if i < len(chunks) - 1 else 0
+        head = f"a=T,f=100,c={cols},m={more};" if i == 0 else f"m={more};"
+        out.append(esc(head + chunk))
+    sys.stdout.write("".join(out) + "\n")
+    sys.stdout.flush()
 
 
 def main() -> None:
@@ -244,6 +274,7 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--min", type=int, default=5)
     ap.add_argument("--tag")
+    ap.add_argument("--open", action="store_true", help="graph: open the PNG in the default viewer instead of drawing it inline")
     a = ap.parse_args()
     graph(a) if a.what == "graph" else report(a)
 
