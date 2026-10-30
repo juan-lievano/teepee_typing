@@ -75,8 +75,8 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 
 ```sh
 cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run after editing (editable installs are skipped by Python 3.15)
-.venv/bin/teepee-stats                  # one report: overview, master mode by day, missed words, slow words, slow trigrams
-.venv/bin/teepee-stats graph            # PNG: wpm per master drill and rolling per-word survival, opened in your viewer
+.venv/bin/teepee-stats                  # one report: overview, last 10/50/100 master drills, missed words, slow words, slow trigrams
+.venv/bin/teepee-stats graph            # PNG: per drill, wpm and per-word survival over the last 100 drills
 .venv/bin/teepee-stats --tag voyager --days 7
 .venv/bin/teepee-book 1342 --name pride     # Pride and Prejudice from Gutenberg
 ```

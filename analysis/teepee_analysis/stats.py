@@ -1,6 +1,6 @@
 """teepee-stats: one report over the keystroke log, or a progress graph.
 
-    teepee-stats                 the report: overview, per day, missed words, slow words, slow trigrams
+    teepee-stats                 the report: overview, recent master drills, missed words, slow words, slow trigrams
     teepee-stats graph           PNG of master-mode progress over drills, opened in the default viewer
     options: --tag X  only drills tagged X      --days N  look back N days (default 90)
              --min N  minimum occurrences for words and trigrams (default 5)
@@ -117,23 +117,36 @@ def show(df, **fmt):
         print(df)
 
 
-def master_days(drills: pl.DataFrame) -> pl.DataFrame:
-    """Per-day roll-up of master drills: how far you get and per-word survival."""
-    m = drills.filter((pl.col("mode") == "master") & pl.col("outcome").is_in(["failed", "completed"]))
+WINDOW = 100  # drills in the rolling window for the graph
+
+def master_recent(drills: pl.DataFrame) -> pl.DataFrame:
+    """Master drills, most recent N for several N: how far you get, per-word survival, wpm."""
+    m = drills.filter((pl.col("mode") == "master") & pl.col("outcome").is_in(["failed", "completed"])).sort("id")
     if m.is_empty():
         return m
-    return (
-        m.group_by("day").agg(
-            drills=pl.len(),
-            finished=(pl.col("outcome") == "completed").sum(),
-            median_words=pl.col("words").median(),
-            mean_words=pl.col("words").mean().round(1),
-            best=pl.col("words").max(),
-            survival_pct=(100 * pl.col("words").sum()
-                          / (pl.col("words").sum() + (pl.col("outcome") == "failed").sum())).round(1),
-            wpm=pl.col("wpm").mean().round(1),
-        ).sort("day", descending=True)
-    )
+    rows = []
+    for n in [10, 50, 100, 500, m.height]:
+        if n > m.height and n != m.height:
+            continue
+        r = m.tail(n)
+        done = r["words"].sum(); fails = (r["outcome"] == "failed").sum()
+        rows.append({
+            "last": "all" if n == m.height else str(n),
+            "drills": r.height,
+            "finished": int((r["outcome"] == "completed").sum()),
+            "median_words": r["words"].median(),
+            "best": int(r["words"].max()),
+            "survival_pct": round(100 * done / (done + fails), 1) if done + fails else None,
+            "wpm": round(r["wpm"].drop_nulls().mean(), 1) if r["wpm"].drop_nulls().len() else None,
+        })
+    # dedupe when e.g. 10 == all
+    seen, out = set(), []
+    for row in rows:
+        key = (row["drills"], row["last"] == "all")
+        if row["drills"] in seen and row["last"] != "all":
+            continue
+        seen.add(row["drills"]); out.append(row)
+    return pl.DataFrame(out)
 
 
 def report(a):
@@ -150,8 +163,8 @@ def report(a):
     print(f"  time typing {minutes:.0f} min   keys {drills['chars_typed'].sum()}   correct {drills['chars_correct'].sum()}"
           f"   words done {drills['words'].sum()}")
 
-    section("master mode by day · survival = words completed / words attempted")
-    show(master_days(drills))
+    section("master mode, most recent drills · survival = words completed / words attempted")
+    show(master_recent(drills))
 
     section("missed words · seen = times reached, failed = drills that ended on it")
     show(frame(con, MISSED, a))
@@ -182,7 +195,7 @@ def graph(a):
     wpm = m["wpm"].to_list()
     words = m["words"].to_list()
     failed = [o == "failed" for o in m["outcome"].to_list()]
-    win = max(5, min(20, n // 4))
+    win = WINDOW
 
     def rolling(vals, k):
         out = []
@@ -209,7 +222,7 @@ def graph(a):
 
     ax1.scatter(x, wpm, s=24, color=BLUE, alpha=0.45, linewidths=0, zorder=2)
     ax1.plot(x, rolling(wpm, win), color=BLUE, linewidth=2, zorder=3)
-    ax1.set_title(f"wpm per master drill · dots are drills, line is the mean of the last {win}", loc="left", color=INK2, fontsize=11)
+    ax1.set_title(f"wpm per master drill · dots are drills, line is the mean of the last {win} (fewer at the start)", loc="left", color=INK2, fontsize=11)
     ax1.set_ylabel("wpm")
 
     ax2.plot(x, surv, color=BLUE, linewidth=2, zorder=3)
