@@ -14,23 +14,35 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::input::Stamped;
 use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind};
 use crate::store::{KeyRow, Store};
+
+/// Monkeytype's default theme, Serika Dark. Hardcoded on purpose.
+mod theme {
+    use ratatui::style::Color;
+    pub const BG: Color = Color::Rgb(0x32, 0x34, 0x37);
+    pub const MAIN: Color = Color::Rgb(0xe2, 0xb7, 0x14); // caret, accents
+    pub const SUB: Color = Color::Rgb(0x64, 0x66, 0x69); // untyped text, chrome
+    pub const TEXT: Color = Color::Rgb(0xd1, 0xd0, 0xc5); // typed text
+    pub const ERROR: Color = Color::Rgb(0xca, 0x47, 0x54);
+    /// OSC 12: terminal cursor colour, for the bar caret.
+    pub const CURSOR_HEX: &str = "#e2b714";
+}
+
+pub use theme::CURSOR_HEX;
 
 /// How the next character to type is marked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Caret {
     /// The terminal's own cursor as a thin steady bar before the character.
     Bar,
-    /// The character cell in reverse video.
+    /// The character cell in the caret colour, Monkeytype style.
     Block,
-    /// The character underlined.
-    Underline,
 }
 
 impl Caret {
@@ -38,7 +50,6 @@ impl Caret {
         match self {
             Caret::Bar => "bar",
             Caret::Block => "block",
-            Caret::Underline => "underline",
         }
     }
 
@@ -46,7 +57,6 @@ impl Caret {
         match s {
             "bar" => Some(Caret::Bar),
             "block" => Some(Caret::Block),
-            "underline" => Some(Caret::Underline),
             _ => None,
         }
     }
@@ -324,6 +334,7 @@ fn word_span(exp: &[char], pos: usize) -> (usize, usize) {
 // ---------------------------------------------------------------- rendering
 
 fn draw(f: &mut ratatui::Frame, d: &Drill) {
+    f.render_widget(Block::new().style(Style::default().bg(theme::BG)), f.area());
     let [header, banner, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(2),
@@ -334,14 +345,15 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     f.render_widget(
         Line::from(vec![
-            Span::raw(format!(" {}", d.mode.title())).dim(),
-            Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) }).cyan().bold(),
-            Span::raw("  esc quits").dark_gray(),
+            Span::raw(format!(" {}", d.mode.title())).fg(theme::SUB),
+            Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) })
+                .fg(theme::MAIN),
+            Span::raw("  esc quits").fg(theme::SUB),
         ]),
         header,
     );
     if let Some(b) = &d.banner {
-        f.render_widget(Line::from(format!(" {b}")).red().bold(), banner);
+        f.render_widget(Line::from(format!(" {b}")).fg(theme::ERROR).bold(), banner);
     }
 
     let column = centered(body, 72);
@@ -369,7 +381,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
         _ => 0.0,
     };
     f.render_widget(
-        Line::from(format!(" {:>3.0} wpm   {}/{}", wpm, d.cur, d.targets.len())).dark_gray(),
+        Line::from(format!(" {:>3.0} wpm   {}/{}", wpm, d.cur, d.targets.len())).fg(theme::SUB),
         footer,
     );
 }
@@ -391,15 +403,13 @@ enum Glyph {
 
 fn style(g: Glyph, caret: Caret) -> Style {
     match g {
-        Glyph::Done => Style::default(),
-        Glyph::Wrong => Style::default().fg(Color::Red).add_modifier(Modifier::UNDERLINED),
-        Glyph::Pending => Style::default().fg(Color::DarkGray),
+        Glyph::Done => Style::default().fg(theme::TEXT),
+        Glyph::Wrong => Style::default().fg(theme::ERROR),
+        Glyph::Pending => Style::default().fg(theme::SUB),
         Glyph::Cursor => match caret {
             // The terminal draws the bar; the cell itself looks pending.
-            Caret::Bar => Style::default().fg(Color::DarkGray),
-            // Full-contrast block: background on the terminal's foreground.
-            Caret::Block => Style::default().add_modifier(Modifier::REVERSED),
-            Caret::Underline => Style::default().add_modifier(Modifier::UNDERLINED),
+            Caret::Bar => Style::default().fg(theme::SUB),
+            Caret::Block => Style::default().fg(theme::BG).bg(theme::MAIN),
         },
     }
 }

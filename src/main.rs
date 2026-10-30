@@ -30,7 +30,7 @@ struct Cli {
     /// Seconds between two keys after which the drill is void (outcome afk).
     #[arg(long, global = true, default_value_t = 3.0)]
     afk: f64,
-    /// Caret shape: bar (thin, default), block or underline. Sticky like --tag.
+    /// Caret shape: bar (thin, default) or block. Sticky like --tag.
     #[arg(long, global = true, value_enum)]
     caret: Option<Caret>,
 }
@@ -268,17 +268,21 @@ fn run(
     caret: Caret,
     first: Vec<Box<dyn Mode>>,
 ) -> Result<()> {
+    use std::io::Write;
+
     use ratatui::crossterm::{cursor::SetCursorStyle, execute};
     let terminal = ratatui::init();
     if caret == Caret::Bar {
         // The app positions the terminal's cursor before the next character.
         let _ = execute!(std::io::stdout(), SetCursorStyle::SteadyBar);
+        let _ = write!(std::io::stdout(), "\x1b]12;{}\x1b\\", runner::CURSOR_HEX);
     }
     let rx = input::spawn();
     let mut kernel = Kernel { store, rx, terminal, tags, afk, caret };
     let result = kernel.run(first);
     if caret == Caret::Bar {
         let _ = execute!(std::io::stdout(), SetCursorStyle::DefaultUserShape);
+        let _ = write!(std::io::stdout(), "\x1b]112\x1b\\"); // reset cursor colour
     }
     ratatui::restore();
     result

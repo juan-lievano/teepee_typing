@@ -14,7 +14,7 @@ teepee master --keep-case    # keep "February", "I"; default lowercases like Mon
 teepee lit pride             # a book, one sentence at a time (expert strictness)
 teepee lit pride --strict lenient
 teepee --tag voyager         # tag every drill from now on (sticky); --tag none clears
-teepee --caret block         # caret shape: bar (thin, default), block, underline; sticky
+teepee --caret block         # caret shape: bar (thin, default) or block; sticky
 teepee tags                  # current tags
 teepee retag laptop --last 2h        # fix the tags on the last two hours of drills
 teepee retag none --ids 120-140 --dry-run
@@ -36,6 +36,9 @@ restarts. Waiting before the first key costs nothing.
 Keys that arrive in the first moments after a failure, before your hands have
 been still for 400 ms, are ignored (and logged as `ignored`), so the tail of
 the word you were typing cannot fail the practice drill.
+
+Colours are Monkeytype's default theme (Serika Dark), painted over the whole
+screen so they don't depend on the terminal's palette.
 
 ## Modes and strictness
 
