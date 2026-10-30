@@ -14,7 +14,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Style, Stylize};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -33,6 +33,8 @@ mod theme {
     pub const SUB: Color = Color::Rgb(0x72, 0x7e, 0x7a); // untyped text
     pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
     pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
+    /// The character on the caret: deeper than the box so it cuts out cleanly.
+    pub const ON_CARET: Color = Color::Rgb(0x0f, 0x18, 0x26);
 }
 
 pub struct Kernel {
@@ -378,7 +380,7 @@ fn style(g: Glyph) -> Style {
         Glyph::Done => Style::default().fg(theme::TEXT),
         Glyph::Wrong => Style::default().fg(theme::ERROR),
         Glyph::Pending => Style::default().fg(theme::SUB),
-        Glyph::Cursor => Style::default().fg(theme::BG).bg(theme::MAIN),
+        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN).add_modifier(Modifier::BOLD),
     }
 }
 
