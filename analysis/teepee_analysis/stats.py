@@ -2,6 +2,7 @@
 
     teepee-stats summary [--days N]   recent drills: wpm, accuracy, outcome
     teepee-stats missed  [--days N]   words that ended a drill, most often first
+                         [--all]      also count re-fails inside practice drills
     teepee-stats words   [--days N]   slowest words by ms per character
     teepee-stats trigrams [--min N]   slowest trigrams by median interval to their last key
 
@@ -36,7 +37,7 @@ ORDER BY d.id DESC LIMIT 40
 MISSED = """
 SELECT failed_word AS word, count(*) AS misses
 FROM tp.drills
-WHERE outcome = 'failed' AND mode <> 'practice' AND failed_word IS NOT NULL
+WHERE outcome = 'failed' AND failed_word IS NOT NULL $practice
   AND started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter
 GROUP BY 1 ORDER BY misses DESC, word LIMIT 40
 """
@@ -83,12 +84,14 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--min", type=int, default=5, help="minimum occurrences (words, trigrams)")
     ap.add_argument("--tag", help="only drills carrying this tag")
+    ap.add_argument("--all", action="store_true", help="missed: include re-fails inside practice drills")
     a = ap.parse_args()
     sql = {"summary": SUMMARY, "missed": MISSED, "words": WORDS, "trigrams": TRIGRAMS}[a.what]
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
         sql.replace("$days", str(int(a.days)))
         .replace("$min", str(int(a.min)))
+        .replace("$practice", "" if a.all else "AND mode <> 'practice'")
         .replace("$tagfilter_d", f"AND list_contains(from_json(d.tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
         .replace("$tagfilter", f"AND list_contains(from_json(tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
     )
