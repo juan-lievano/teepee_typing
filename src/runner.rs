@@ -14,7 +14,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style, Stylize};
+use ratatui::style::{Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
@@ -397,7 +397,7 @@ fn style(g: Glyph) -> Style {
         Glyph::Done => Style::default().fg(theme::TEXT),
         Glyph::Wrong => Style::default().fg(theme::ERROR),
         Glyph::Pending => Style::default().fg(theme::SUB),
-        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN).add_modifier(Modifier::BOLD),
+        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN),
     }
 }
 
