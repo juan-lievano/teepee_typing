@@ -25,12 +25,12 @@ use crate::store::{KeyRow, Store};
 /// "Hopper navy, ice caret": the box takes the user's terminal palette
 /// (a dark navy lifted a step, the terminal's cursor blue as caret, its
 /// foreground as typed text). Faint text is blended from the box toward
-/// the typed colour to read at 4.3:1. Hardcoded on purpose.
+/// the typed colour to read at 5:1. Hardcoded on purpose.
 mod theme {
     use ratatui::style::Color;
     pub const BG: Color = Color::Rgb(0x1c, 0x2a, 0x40); // box
     pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // caret, accents
-    pub const SUB: Color = Color::Rgb(0x84, 0x8f, 0x86); // untyped text, 4.3:1 on the box
+    pub const SUB: Color = Color::Rgb(0x91, 0x9b, 0x8f); // untyped text, 5:1 on the box
     pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
     pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
     /// The character on the caret: deeper than the box so it cuts out cleanly.
@@ -306,9 +306,13 @@ fn word_span(exp: &[char], pos: usize) -> (usize, usize) {
 // ---------------------------------------------------------------- rendering
 
 /// Text column width and the padding of the box around it, in cells.
-const COLUMN: u16 = 72;
+const COLUMN: u16 = 60;
 const PAD_X: u16 = 4;
 const PAD_Y: u16 = 1;
+/// Lines of text shown at once (the window scrolls with the caret, like
+/// Monkeytype), and the blank rows left between them for air.
+const VISIBLE_LINES: usize = 3;
+const LINE_GAP: u16 = 1;
 
 fn draw(f: &mut ratatui::Frame, d: &Drill) {
     let [header, banner, body, footer] = Layout::vertical([
@@ -334,7 +338,20 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     // The text column, and a padded box around it painted in the theme.
     let column = centered(body, COLUMN);
-    let lines = wrap(d, column.width.max(1) as usize);
+    let (all, caret_line) = wrap(d, column.width.max(1) as usize);
+    // Window of VISIBLE_LINES around the caret: the caret's line is the second
+    // one once the text has scrolled, like Monkeytype.
+    let first = caret_line.saturating_sub(1).min(all.len().saturating_sub(VISIBLE_LINES));
+    let window: Vec<Line<'static>> = all.into_iter().skip(first).take(VISIBLE_LINES).collect();
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, l) in window.into_iter().enumerate() {
+        if i > 0 {
+            for _ in 0..LINE_GAP {
+                lines.push(Line::default());
+            }
+        }
+        lines.push(l);
+    }
     let n = lines.len() as u16;
     let text_h = n.min(column.height.saturating_sub(2 * PAD_Y)).max(1);
     let box_h = text_h + 2 * PAD_Y;
@@ -375,15 +392,12 @@ enum Glyph {
     Pending,
 }
 
-/// Everything in the box is bold: heavier strokes read larger at the same
-/// cell size, which is the lever a terminal app has.
 fn style(g: Glyph) -> Style {
-    let s = Style::default().add_modifier(Modifier::BOLD);
     match g {
-        Glyph::Done => s.fg(theme::TEXT),
-        Glyph::Wrong => s.fg(theme::ERROR),
-        Glyph::Pending => s.fg(theme::SUB),
-        Glyph::Cursor => s.fg(theme::ON_CARET).bg(theme::MAIN),
+        Glyph::Done => Style::default().fg(theme::TEXT),
+        Glyph::Wrong => Style::default().fg(theme::ERROR),
+        Glyph::Pending => Style::default().fg(theme::SUB),
+        Glyph::Cursor => Style::default().fg(theme::ON_CARET).bg(theme::MAIN).add_modifier(Modifier::BOLD),
     }
 }
 
@@ -412,8 +426,9 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
 }
 
 /// Greedy word wrap of what is on screen (all words, or the current
-/// sentence) into lines of `width`. Done by hand so the box can be sized.
-fn wrap(d: &Drill, width: usize) -> Vec<Line<'static>> {
+/// sentence) into lines of `width`, plus the index of the line holding the
+/// caret. Done by hand so the window and the box can be sized.
+fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize) {
     // Tokens are "word plus trailing space"; a line never breaks inside one.
     let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
     let shown: Vec<usize> = match d.targets[d.cur].kind {
@@ -436,15 +451,19 @@ fn wrap(d: &Drill, width: usize) -> Vec<Line<'static>> {
 
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     let mut col = 0usize;
+    let mut caret_line = 0;
     for tok in tokens {
         if col > 0 && col + tok.len() > width {
             lines.push(Vec::new());
             col = 0;
         }
         for (c, g) in tok {
+            if g == Glyph::Cursor {
+                caret_line = lines.len() - 1;
+            }
             lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g)));
             col += 1;
         }
     }
-    lines.into_iter().map(Line::from).collect()
+    (lines.into_iter().map(Line::from).collect(), caret_line)
 }
