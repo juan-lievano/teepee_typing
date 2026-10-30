@@ -4,6 +4,8 @@
     teepee-stats missed  [--days N]   words that ended a drill, most often first
     teepee-stats words   [--days N]   slowest words by ms per character
     teepee-stats trigrams [--min N]   slowest trigrams by median interval to their last key
+
+Every command takes --tag X to keep only drills tagged X (see `teepee --tag`).
 """
 import argparse
 
@@ -22,11 +24,12 @@ WITH k AS (
   FROM tp.keystrokes GROUP BY drill_id
 )
 SELECT d.id, d.mode, strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d %H:%M') AS started, d.outcome,
+       array_to_string(from_json(d.tags, '["VARCHAR"]'), ' ') AS tags,
        round(k.chars_correct / 5.0 / nullif(k.secs, 0) * 60, 1)        AS wpm,
        round(100.0 * k.chars_correct / nullif(k.chars_typed, 0), 1)    AS acc,
        k.chars_typed AS chars
 FROM tp.drills d LEFT JOIN k ON k.drill_id = d.id
-WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY)
+WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 ORDER BY d.id DESC LIMIT 40
 """
 
@@ -34,7 +37,7 @@ MISSED = """
 SELECT failed_word AS word, count(*) AS misses
 FROM tp.drills
 WHERE outcome = 'failed' AND mode <> 'practice' AND failed_word IS NOT NULL
-  AND started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY)
+  AND started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter
 GROUP BY 1 ORDER BY misses DESC, word LIMIT 40
 """
 
@@ -50,7 +53,7 @@ FROM tp.targets t
 JOIN first f ON f.drill_id = t.drill_id AND f.target_idx = t.idx
 JOIN tp.drills d ON d.id = t.drill_id
 WHERE t.kind = 'word' AND t.completed_at_ns IS NOT NULL AND d.mode <> 'practice'
-  AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY)
+  AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 GROUP BY 1 HAVING n >= $min ORDER BY ms_per_char DESC LIMIT 40
 """
 
@@ -63,6 +66,7 @@ WITH k AS (
          lag(correct, 2) OVER w AS ok1, lag(correct, 1) OVER w AS ok2,
          t_ns - lag(t_ns, 1) OVER w AS dt
   FROM tp.keystrokes
+  WHERE drill_id IN (SELECT id FROM tp.drills d WHERE true $tagfilter_d)
   WINDOW w AS (PARTITION BY drill_id ORDER BY seq)
 )
 SELECT replace(c1 || c2 || typed, ' ', '␣') AS trigram, count(*) AS n,
@@ -78,9 +82,16 @@ def main() -> None:
     ap.add_argument("what", choices=["summary", "missed", "words", "trigrams"])
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--min", type=int, default=5, help="minimum occurrences (words, trigrams)")
+    ap.add_argument("--tag", help="only drills carrying this tag")
     a = ap.parse_args()
     sql = {"summary": SUMMARY, "missed": MISSED, "words": WORDS, "trigrams": TRIGRAMS}[a.what]
-    sql = sql.replace("$days", str(int(a.days))).replace("$min", str(int(a.min)))
+    tag = a.tag.replace("'", "''") if a.tag else None
+    sql = (
+        sql.replace("$days", str(int(a.days)))
+        .replace("$min", str(int(a.min)))
+        .replace("$tagfilter_d", f"AND list_contains(from_json(d.tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
+        .replace("$tagfilter", f"AND list_contains(from_json(tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
+    )
     rel = connect().sql(sql)
     df = pl.DataFrame(rel.fetchall(), schema=rel.columns, orient="row")
     with pl.Config(tbl_rows=50, tbl_cols=20, tbl_width_chars=120):

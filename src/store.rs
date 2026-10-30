@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS drills (
   ended_at_ns   INTEGER,                   -- monotonic ns since drill start
   outcome       TEXT,                      -- completed | failed | aborted
   failed_word   TEXT,                      -- the word that ended a failed drill
-  config        TEXT    NOT NULL           -- JSON, mode-specific
+  config        TEXT    NOT NULL,          -- JSON, mode-specific
+  tags          TEXT    NOT NULL DEFAULT '[]'  -- JSON array, e.g. ["voyager"]
 );
 
 CREATE TABLE IF NOT EXISTS targets (
@@ -70,6 +71,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_failed_word {
         conn.execute_batch("ALTER TABLE drills ADD COLUMN failed_word TEXT;")?;
     }
+    let has_tags = conn
+        .prepare("SELECT 1 FROM pragma_table_info('drills') WHERE name = 'tags'")?
+        .exists([])?;
+    if !has_tags {
+        conn.execute_batch("ALTER TABLE drills ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';")?;
+    }
     Ok(())
 }
 
@@ -104,11 +111,18 @@ impl Store {
         Ok(Store { conn })
     }
 
-    pub fn begin_drill(&self, mode: &str, parent: Option<i64>, config: &Value) -> Result<i64> {
+    pub fn begin_drill(
+        &self,
+        mode: &str,
+        parent: Option<i64>,
+        config: &Value,
+        tags: &[String],
+    ) -> Result<i64> {
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         self.conn.execute(
-            "INSERT INTO drills (mode, parent_drill, started_at_ms, config) VALUES (?1, ?2, ?3, ?4)",
-            params![mode, parent, now_ms, config.to_string()],
+            "INSERT INTO drills (mode, parent_drill, started_at_ms, config, tags)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![mode, parent, now_ms, config.to_string(), Value::from(tags).to_string()],
         )?;
         Ok(self.conn.last_insert_rowid())
     }

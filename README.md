@@ -11,9 +11,15 @@ teepee                       # master mode: 50 random words from english 10k
 teepee master --words 30     # shorter drills
 teepee lit pride             # a book, one sentence at a time (expert strictness)
 teepee lit pride --strict lenient
+teepee --tag voyager         # label this session's drills (repeatable)
 teepee books                 # books you have prepared
 teepee data                  # where the database lives
 ```
+
+Tags mark things the data can't know on its own, like which keyboard you
+used. `--tag` is repeatable, and `TEEPEE_TAGS=voyager,desk` in the
+environment is the default when no flag is given, so a shell alias per setup
+works. Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then typed ten times and a fresh drill starts, with no menu in between.
@@ -39,7 +45,7 @@ The kernel (`src/runner.rs`) implements the strictness levels once; a mode
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
-| `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome, mode config as JSON |
+| `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome, failed word, mode config as JSON, tags as JSON array |
 | `targets`    | word or sentence asked for | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `pride#1037` |
 | `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`/`backspace`), correct |
 
@@ -53,6 +59,7 @@ cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run after
 .venv/bin/teepee-stats summary
 .venv/bin/teepee-stats missed
 .venv/bin/teepee-stats trigrams --min 10
+.venv/bin/teepee-stats missed --tag voyager
 .venv/bin/teepee-book 1342 --name pride     # Pride and Prejudice from Gutenberg
 ```
 

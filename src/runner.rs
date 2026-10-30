@@ -21,6 +21,8 @@ pub struct Kernel {
     pub store: Store,
     pub rx: Receiver<Stamped>,
     pub terminal: DefaultTerminal,
+    /// Session labels (keyboard, place, ...) stamped on every drill.
+    pub tags: Vec<String>,
 }
 
 struct Queued {
@@ -43,6 +45,7 @@ struct Drill<'a> {
     first_key: Option<Instant>,
     correct_chars: usize,
     banner: Option<String>,
+    tags: String,
 }
 
 impl Kernel {
@@ -72,7 +75,7 @@ impl Kernel {
         banner: Option<String>,
     ) -> Result<(i64, Outcome)> {
         let targets = mode.targets();
-        let id = self.store.begin_drill(mode.name(), parent, &mode.config())?;
+        let id = self.store.begin_drill(mode.name(), parent, &mode.config(), &self.tags)?;
         let t0 = Instant::now();
         if targets.is_empty() {
             self.store.end_drill(id, &Outcome::Completed, 0)?;
@@ -93,6 +96,7 @@ impl Kernel {
             first_key: None,
             correct_chars: 0,
             banner,
+            tags: self.tags.join(" "),
         };
         let strictness = d.mode.strictness();
 
@@ -256,8 +260,8 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
     f.render_widget(
         Line::from(vec![
             Span::raw(format!(" {}", d.mode.title())).dim(),
-            Span::raw("  "),
-            Span::raw("esc quits").dark_gray(),
+            Span::raw(if d.tags.is_empty() { String::new() } else { format!("  tags: {}", d.tags) }).cyan().bold(),
+            Span::raw("  esc quits").dark_gray(),
         ]),
         header,
     );

@@ -23,6 +23,10 @@ use crate::store::Store;
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
+    /// Label stored on every drill of this session, e.g. the keyboard.
+    /// Repeatable. Defaults to the comma-separated `TEEPEE_TAGS` env var.
+    #[arg(long, global = true)]
+    tag: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -60,6 +64,12 @@ enum Cmd {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Master { words: 50, reps: 10 });
+    let mut tags = cli.tag;
+    if tags.is_empty() && let Ok(env) = std::env::var("TEEPEE_TAGS") {
+        tags = env.split(',').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect();
+    }
+    tags.sort();
+    tags.dedup();
 
     match cmd {
         Cmd::Data => {
@@ -89,7 +99,7 @@ fn main() -> Result<()> {
         }
         Cmd::Master { words, reps } => {
             let store = Store::open(&paths::db_path())?;
-            run(store, vec![Box::new(Master::new(words::english_10k(), words, reps))])
+            run(store, tags, vec![Box::new(Master::new(words::english_10k(), words, reps))])
         }
         Cmd::Lit { book, sentences, strict, reps } => {
             let store = Store::open(&paths::db_path())?;
@@ -107,15 +117,15 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let mode = Literature::new(book, Arc::new(lines), start, sentences, strict, reps);
-            run(store, vec![Box::new(mode)])
+            run(store, tags, vec![Box::new(mode)])
         }
     }
 }
 
-fn run(store: Store, first: Vec<Box<dyn Mode>>) -> Result<()> {
+fn run(store: Store, tags: Vec<String>, first: Vec<Box<dyn Mode>>) -> Result<()> {
     let terminal = ratatui::init();
     let rx = input::spawn();
-    let mut kernel = Kernel { store, rx, terminal };
+    let mut kernel = Kernel { store, rx, terminal, tags };
     let result = kernel.run(first);
     ratatui::restore();
     result
