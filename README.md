@@ -76,9 +76,9 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 ```sh
 cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run after editing (editable installs are skipped by Python 3.15)
 .venv/bin/teepee-stats summary
-.venv/bin/teepee-stats missed
+.venv/bin/teepee-stats missed           # seen x, failed y, per word
 .venv/bin/teepee-stats trigrams --min 10
-.venv/bin/teepee-stats missed --tag voyager
+.venv/bin/teepee-stats missed           # seen x, failed y, per word --tag voyager
 .venv/bin/teepee-book 1342 --name pride     # Pride and Prejudice from Gutenberg
 ```
 

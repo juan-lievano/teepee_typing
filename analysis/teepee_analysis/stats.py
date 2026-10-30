@@ -1,8 +1,7 @@
 """teepee-stats: quick looks at the keystroke log.
 
     teepee-stats summary [--days N]   recent drills: wpm, accuracy, outcome
-    teepee-stats missed  [--days N]   words that ended a drill, most often first
-                         [--all]      also count re-fails inside practice drills
+    teepee-stats missed  [--days N]   words you have failed on: seen x times, failed y
     teepee-stats words   [--days N]   slowest words by ms per character
     teepee-stats trigrams [--min N]   slowest trigrams by median interval to their last key
 
@@ -34,12 +33,25 @@ WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 ORDER BY d.id DESC LIMIT 40
 """
 
+# Seen = every time the word was reached as a target (master words and
+# practice reps alike); failed = every drill that ended on it.
 MISSED = """
-SELECT failed_word AS word, count(*) AS misses
-FROM tp.drills
-WHERE outcome = 'failed' AND failed_word IS NOT NULL $practice
-  AND started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter
-GROUP BY 1 ORDER BY misses DESC, word LIMIT 40
+WITH seen AS (
+  SELECT t.text AS word, count(*) AS seen
+  FROM tp.targets t JOIN tp.drills d ON d.id = t.drill_id
+  WHERE t.kind = 'word' AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
+  GROUP BY 1
+),
+failed AS (
+  SELECT failed_word AS word, count(*) AS failed
+  FROM tp.drills d
+  WHERE failed_word IS NOT NULL AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
+  GROUP BY 1
+)
+SELECT f.word, coalesce(s.seen, 0) AS seen, f.failed,
+       round(100.0 * f.failed / greatest(coalesce(s.seen, 0), 1), 0) AS fail_pct
+FROM failed f LEFT JOIN seen s ON s.word = f.word
+ORDER BY f.failed DESC, fail_pct DESC, f.word LIMIT 40
 """
 
 # Word speed = (completion - first key on that word) / characters, completed words only.
@@ -85,14 +97,12 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--min", type=int, default=5, help="minimum occurrences (words, trigrams)")
     ap.add_argument("--tag", help="only drills carrying this tag")
-    ap.add_argument("--all", action="store_true", help="missed: include re-fails inside practice drills")
     a = ap.parse_args()
     sql = {"summary": SUMMARY, "missed": MISSED, "words": WORDS, "trigrams": TRIGRAMS}[a.what]
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
         sql.replace("$days", str(int(a.days)))
         .replace("$min", str(int(a.min)))
-        .replace("$practice", "" if a.all else "AND mode <> 'practice'")
         .replace("$tagfilter_d", f"AND list_contains(from_json(d.tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
         .replace("$tagfilter", f"AND list_contains(from_json(tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
     )
