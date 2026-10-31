@@ -35,7 +35,7 @@ Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
 is then practised, repeated until about 25 keystrokes of it have been typed
-(an accented letter counts as two, dead key plus vowel)
+(an accented letter counts as two and a half: dead key, vowel, and a slow chord)
 but at most 10 times (`PRACTICE_CHARS`, `MAX_REPS` in `src/modes/practice.rs`),
 and a fresh drill starts, with no menu in between.
 A pause longer than `--afk` seconds (default 3) between two keys voids the

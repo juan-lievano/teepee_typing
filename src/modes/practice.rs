@@ -23,10 +23,11 @@ pub struct Practice {
 
 impl Practice {
     pub fn new(word: String, source_ref: Option<String>) -> Practice {
-        // Keystrokes, not characters: an accented letter is a dead key plus
-        // a vowel, so "más" costs four keys and gets fewer reps than "mas".
-        let keys: usize = word.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>().max(1);
-        let reps = PRACTICE_CHARS.div_ceil(keys).clamp(1, MAX_REPS);
+        // Effort, not characters: an accented letter is a dead key plus a
+        // vowel and the chord is slow, so it counts two and a half (kept in
+        // half units), and "más" gets fewer reps than "mas".
+        let halves: usize = word.chars().map(|c| if c.is_ascii() { 2 } else { 5 }).sum::<usize>().max(1);
+        let reps = (2 * PRACTICE_CHARS).div_ceil(halves).clamp(1, MAX_REPS);
         Practice { word, reps, source_ref }
     }
 }
