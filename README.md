@@ -80,6 +80,7 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 
 ```sh
 cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run after editing (editable installs are skipped by Python 3.15)
+ln -sf "$PWD/.venv/bin/teepee-stats" "$PWD/.venv/bin/teepee-book" ~/.local/bin/   # put them on PATH
 .venv/bin/teepee-stats                  # the report: graph inline (wpm per drill, per-word survival over the last 100), then
                                         # overview, last 10/50/100 master drills, missed words, slow words, slow trigrams
 .venv/bin/teepee-stats --open           # graph in the image viewer instead;  --no-graph for tables only
