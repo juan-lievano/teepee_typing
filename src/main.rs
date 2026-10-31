@@ -36,7 +36,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Random words from the english 10k list; the first wrong key fails the
-    /// drill and the missed word is practised (~50 characters of it) before a
+    /// drill and the missed word is practised (~25 keystrokes of it) before a
     /// fresh drill (default).
     Master {
         /// Word list: english 200, 1k, 5k or 10k.
@@ -61,7 +61,7 @@ enum Cmd {
         #[arg(long, default_value_t = 50)]
         words: usize,
     },
-    /// Type a book one line at a time: a sentence of prose, a verse of poetry.
+    /// Type a book one line at a time: a clause of prose, a verse of poetry.
     Lit {
         /// Book name (or a unique prefix of it). Omit it to pick from a list.
         book: Option<String>,

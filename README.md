@@ -34,7 +34,8 @@ different one or `--tag none`; the header always shows the current state.
 Stats take `--tag` to filter.
 
 Esc quits. The first wrong key in master mode ends the drill; the missed word
-is then practised, repeated until about 25 characters of it have been typed
+is then practised, repeated until about 25 keystrokes of it have been typed
+(an accented letter counts as two, dead key plus vowel)
 but at most 10 times (`PRACTICE_CHARS`, `MAX_REPS` in `src/modes/practice.rs`),
 and a fresh drill starts, with no menu in between.
 A pause longer than `--afk` seconds (default 3) between two keys voids the
@@ -49,7 +50,7 @@ palette, hardcoded in `src/runner.rs`); the rest of the screen is your
 terminal. There is no caret: typed text is bright, untyped text faint, and
 the first faint letter is the next one to type. The one ambiguous spot, the
 space after a finished word, shows as a faint dot once you have paused on it
-for 200 ms.
+for half a second.
 
 ## Modes and strictness
 
@@ -64,7 +65,7 @@ the book moves on). **Strictness** decides how mistakes are judged, Monkeytype's
 
 | level   | behaviour |
 |---------|-----------|
-| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays red; backspace (or Alt/Ctrl+Backspace, Ctrl+W for the word) works inside the current word only. The mode gets the missed words and each sentence's accuracy when the drill ends |
+| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint; backspace (or Alt/Ctrl+Backspace, Ctrl+W for the word) works inside the current word only. The mode gets the missed words and each sentence's accuracy when the drill ends |
 | master  | the first wrong key fails the drill |
 
 The kernel (`src/runner.rs`) implements both levels once; a mode
@@ -109,9 +110,10 @@ teepee stats --open          # also the progress graph (wpm per drill, per-word 
 teepee stats --tag voyager --days 7
 teepee book 2000 --name quijote --lang es --from "En un lugar de la Mancha"
                              # a Gutenberg text into data/books/<name>.txt (one target per
-                             # line: a sentence of prose, semicolons split too, or with
-                             # --verse one verse of poetry) plus <name>.json (language,
-                             # title); --from skips the front matter, --to stops before a phrase
+                             # line: a clause of prose, split at . ! ? , ; : so lines are
+                             # verse-sized, or with --verse one verse of poetry) plus
+                             # <name>.json (language, title); --from skips the front matter,
+                             # --to stops before a phrase
 ```
 
 Books prepared so far: `dante` (Longfellow's verse translation, Gutenberg 1004,
@@ -121,6 +123,17 @@ and ¿¡ are kept, typed as the dead-key compositions the terminal sends).
 Progress in a book counts from the file's mtime, so re-preparing it starts
 over. Slow-word and slow-trigram tables are per language, through
 `targets.source_ref` → `sources.lang`.
+
+Timing caveat: kanata's tap-hold keys (the Colemak-DH home row a r s t n e i o
+and the space layer-tap) are reported when the tap is decided, up to a hold
+time after the physical press, so a gap ending on one reads too long and a
+gap starting on one too short. Words are therefore clocked space to space,
+where the delay cancels exactly, and keys, bigrams and trigrams are clocked
+from the key before them to the key after them, so their own delays cancel
+too; only the two context keys at the window ends get the mean delay taken
+out, estimated from the same keystrokes as half the asymmetry between
+plain→hold and hold→plain gaps (about 65 to 85 ms). Means after that
+correction are sound; single gaps are not.
 
 Both run the Python package in `analysis/`, set up once with:
 

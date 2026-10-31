@@ -1,4 +1,4 @@
-//! One word, repeated until at least `chars` characters of it have been
+//! One word, repeated until at least `PRACTICE_CHARS` keystrokes of it have been
 //! asked for (so a long word gets few reps and a short one more), never more
 //! than `MAX_REPS`. Same fail rule as master; a failure restarts the drill.
 
@@ -23,8 +23,10 @@ pub struct Practice {
 
 impl Practice {
     pub fn new(word: String, source_ref: Option<String>) -> Practice {
-        let len = word.chars().count().max(1);
-        let reps = PRACTICE_CHARS.div_ceil(len).clamp(1, MAX_REPS);
+        // Keystrokes, not characters: an accented letter is a dead key plus
+        // a vowel, so "más" costs four keys and gets fewer reps than "mas".
+        let keys: usize = word.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum::<usize>().max(1);
+        let reps = PRACTICE_CHARS.div_ceil(keys).clamp(1, MAX_REPS);
         Practice { word, reps, source_ref }
     }
 }

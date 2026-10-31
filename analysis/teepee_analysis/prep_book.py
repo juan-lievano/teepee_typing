@@ -6,8 +6,8 @@
 
 Writes <data dir>/books/<name>.txt, one target per line, and <name>.json with
 the language, title and origin, which `teepee lit` records in the database's
-`sources` table. Prose becomes one sentence per line (a semicolon ends a
-sentence too); with --verse, poetry becomes one verse per line.
+`sources` table. Prose becomes one clause per line, split at . ! ? , ; :
+so lines are verse-sized; with --verse, poetry becomes one verse per line.
 
 The text starts at the first paragraph containing --from and stops before the
 first containing --to (Gutenberg's own header and licence are always cut;
@@ -82,13 +82,15 @@ def verse_lines(text: str) -> list[str]:
     return out
 
 
-# A sentence ends at . ! ? (plus a closing quote) before a capital or ¿¡, or
-# at a semicolon regardless of what follows.
+# A line of prose ends at . ! ? (plus a closing quote) before a capital or
+# ¿¡, or at , ; : regardless of what follows: clause-sized lines, like verse.
+# A piece shorter than `min_chars` is glued to the next one so no words are
+# lost ("Yes," he said, ...).
 START = r'["\'(\[]?[¿¡]?["\'(\[]?[A-ZÁÉÍÓÚÜÑ]'
-BOUNDARY = re.compile(r'[.!?]["\')\]]?(\s+)(?=' + START + r')|;(\s+)')
+BOUNDARY = re.compile(r'[.!?]["\')\]]?(\s+)(?=' + START + r')|[,;:]["\')\]]?(\s+)')
 
 
-def split_sentences(par: str) -> list[str]:
+def split_sentences(par: str, min_chars: int) -> list[str]:
     parts, prev = [], 0
     for m in BOUNDARY.finditer(par):
         g = 1 if m.group(1) is not None else 2
@@ -98,10 +100,12 @@ def split_sentences(par: str) -> list[str]:
     out: list[str] = []
     for p in parts:
         last = re.search(r"(\w+)\.$", out[-1]) if out else None
-        if out and last and last.group(1).lower() in ABBREV:
+        if out and (len(out[-1]) < min_chars or (last and last.group(1).lower() in ABBREV)):
             out[-1] = out[-1] + " " + p
         else:
             out.append(p)
+    if len(out) > 1 and len(out[-1]) < min_chars:
+        out[-2:] = [out[-2] + " " + out[-1]]
     return [re.sub(r"^- ", "", s) for s in out]  # a dialogue dash is not part of the sentence
 
 
@@ -109,7 +113,7 @@ def looks_like_text(s: str, verse: bool) -> bool:
     """Drop front matter, captions and headings that survive the split."""
     if "[" in s or "]" in s or "_" in s or "*" in s:
         return False
-    if not verse and not re.search(r"""[.!?;]["')]?$""", s):
+    if not verse and not re.search(r"""[.!?,;:]["')]?$""", s):
         return False
     letters = [c for c in s if c.isalpha()]
     return bool(letters) and sum(c.isupper() for c in letters) / len(letters) < 0.5
@@ -147,7 +151,7 @@ def main() -> None:
     if verse:
         units = window(verse_lines(text), a.start, a.stop)
     else:
-        units = [s for p in window(paragraphs(text), a.start, a.stop) for s in split_sentences(p)]
+        units = [s for p in window(paragraphs(text), a.start, a.stop) for s in split_sentences(p, a.min_chars)]
     kept = [s for s in units if a.min_chars <= len(s) <= a.max_chars and looks_like_text(s, verse)]
     if not kept:
         sys.exit("nothing kept")

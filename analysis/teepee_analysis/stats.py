@@ -93,13 +93,13 @@ GROUP BY 1 ORDER BY 2 DESC
 """
 
 WORDS = """
-WITH first AS (
-  SELECT drill_id, target_idx, min(t_ns) AS t_first FROM tp.keystrokes WHERE kind = 'char' GROUP BY 1, 2
-)
+-- A word is clocked from the space that ended the previous word to its own
+-- space. Both ends are the same key, so kanata's tap-hold reporting delay
+-- cancels exactly; the first word of a drill has no such start and is skipped.
 SELECT $bare_t AS word, count(*) AS n,
-       round(median((t.completed_at_ns - f.t_first) / 1e6 / length(t.text)), 0) AS ms_per_char
+       round(mean((t.completed_at_ns - p.completed_at_ns) / 1e6 / (length(t.text) + 1)), 0) AS ms_per_char
 FROM tp.targets t
-JOIN first f ON f.drill_id = t.drill_id AND f.target_idx = t.idx
+JOIN tp.targets p ON p.drill_id = t.drill_id AND p.idx = t.idx - 1 AND p.completed_at_ns IS NOT NULL
 JOIN tp.drills d ON d.id = t.drill_id
 LEFT JOIN tp.sources s ON s.name = split_part(t.source_ref, '#', 1)
 WHERE t.kind = 'word' AND t.completed_at_ns IS NOT NULL AND d.mode <> 'practice' AND d.outcome <> 'afk'
@@ -107,33 +107,62 @@ WHERE t.kind = 'word' AND t.completed_at_ns IS NOT NULL AND d.mode <> 'practice'
 GROUP BY 1 HAVING n >= $min ORDER BY ms_per_char DESC LIMIT 12
 """
 
-TRIGRAMS = """
+# Keys kanata reports late: the Colemak-DH home-row mods and the space
+# layer-tap. Their report comes when the tap is decided, up to a hold time
+# after the physical press, so a gap ending on one reads too long by that
+# tap's hold and a gap starting on one too short. The fix: clock an n-gram
+# from the key BEFORE it to the key AFTER it, so the n-gram's own delays
+# cancel, and take the mean delay (DELAY, estimated from the same keys as
+# half the asymmetry between plain->hold and hold->plain gaps) off the two
+# window ends. Sound as averages, not per keystroke.
+HOLD_KEYS = "arstneio "
+
+KEYS = """
 WITH k AS (
-  SELECT k.drill_id, k.seq, k.typed, k.kind, k.correct, k.t_ns,
-         lag(k.typed, 2) OVER w AS c1, lag(k.typed, 1) OVER w AS c2,
-         lag(k.kind, 2) OVER w AS k1, lag(k.kind, 1) OVER w AS k2,
-         lag(k.correct, 2) OVER w AS ok1, lag(k.correct, 1) OVER w AS ok2,
-         k.t_ns - lag(k.t_ns, 1) OVER w AS dt
+  SELECT k.drill_id, k.seq, k.typed, k.kind, k.correct, k.t_ns
   FROM tp.keystrokes k
   JOIN tp.targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
   LEFT JOIN tp.sources s ON s.name = split_part(t.source_ref, '#', 1)
   WHERE k.drill_id IN (SELECT id FROM tp.drills d WHERE coalesce(d.outcome, '') <> 'afk'
                        AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d)
     $langfilter
-  WINDOW w AS (PARTITION BY k.drill_id ORDER BY k.seq)
 )
-SELECT replace(c1 || c2 || typed, ' ', '␣') AS trigram, count(*) AS n,
-       round(median(dt) / 1e6, 0) AS median_ms
-FROM k
-WHERE kind = 'char' AND correct = 1 AND k1 = 'char' AND k2 = 'char' AND ok1 = 1 AND ok2 = 1
-GROUP BY 1 HAVING n >= $min ORDER BY median_ms DESC LIMIT 12
+"""
+
+DELAY = KEYS + """,
+g AS (
+  SELECT (k.t_ns - lag(k.t_ns) OVER w) / 1e6 AS dt,
+         contains('$hold', lag(k.typed) OVER w) AS h1, contains('$hold', k.typed) AS h2,
+         lag(k.kind) OVER w = 'char' AND lag(k.correct) OVER w = 1 AND k.kind = 'char' AND k.correct = 1 AS clean
+  FROM k WINDOW w AS (PARTITION BY k.drill_id ORDER BY k.seq)
+)
+SELECT (mean(dt) FILTER (WHERE NOT h1 AND h2) - mean(dt) FILTER (WHERE h1 AND NOT h2)) / 2 AS delay_ms
+FROM g WHERE clean AND dt < 1000
+"""
+
+NGRAMS = KEYS + """,
+g AS (
+  SELECT string_agg(k.typed, '') OVER (w ROWS BETWEEN $n - 1 PRECEDING AND CURRENT ROW) AS gram,
+         bool_and(k.kind = 'char' AND k.correct = 1) OVER (w ROWS BETWEEN $n PRECEDING AND 1 FOLLOWING) AS clean,
+         contains('$hold', lag(k.typed, $n) OVER w) AS hb, contains('$hold', lead(k.typed, 1) OVER w) AS ha,
+         (lead(k.t_ns, 1) OVER w - lag(k.t_ns, $n) OVER w) / 1e6 AS span
+  FROM k WINDOW w AS (PARTITION BY k.drill_id ORDER BY k.seq)
+)
+SELECT replace(gram, ' ', '␣') AS gram, count(*) AS n,
+       round(mean((span - $delay * ha::INT + $delay * hb::INT) / ($n + 1)), 0) AS ms_per_gap
+FROM g WHERE clean AND span IS NOT NULL AND span < 1000 * ($n + 1)
+GROUP BY 1 HAVING n >= $min ORDER BY ms_per_gap DESC LIMIT $limit
 """
 
 
-def frame(con, sql, a, lang=None):
+def frame(con, sql, a, lang=None, delay=0.0, n=1, limit=12):
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
         sql.replace("$days", str(int(a.days)))
+        .replace("$hold", HOLD_KEYS)
+        .replace("$delay", repr(float(delay)))
+        .replace("$n", str(int(n)))
+        .replace("$limit", str(int(limit)))
         .replace("$min_chars", str(MIN_CHARS))
         .replace("$min", str(int(a.min)))
         .replace("$tagfilter_d", f"AND list_contains(from_json(d.tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
@@ -268,10 +297,13 @@ def report(a):
     # (and of the keyboard's accents), so they are shown per language.
     langs = frame(con, LANGS, a)
     for lang in langs["lang"].to_list():
-        section(f"slowest words · {lang} · ms per character, at least {a.min} completions, master only")
+        section(f"slowest words · {lang} · ms per character, space to space, at least {a.min} completions, master and sprint")
         show(frame(con, WORDS, a, lang))
-        section(f"slowest trigrams · {lang} · median gap before the third key, at least {a.min} occurrences")
-        show(frame(con, TRIGRAMS, a, lang))
+        delay = frame(con, DELAY, a, lang)["delay_ms"][0] or 0.0
+        for n, what, limit in [(1, "keys", 40), (2, "bigrams", 12), (3, "trigrams", 12)]:
+            section(f"slowest {what} · {lang} · ms per gap, clocked from the key before to the key after,"
+                    f" at least {a.min} occurrences, tap-hold delay of {delay:.0f} ms taken out")
+            show(frame(con, NGRAMS, a, lang, delay, n, limit))
     print()
 
 

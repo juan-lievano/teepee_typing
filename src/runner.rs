@@ -12,7 +12,7 @@ const SETTLE: Duration = Duration::from_millis(400);
 /// No caret: typed text is bright, untyped faint, and the first faint letter
 /// is the next one. The one ambiguity is a pending space after a finished
 /// word, so after this long without a key it is drawn as a faint dot.
-const HESITATE: Duration = Duration::from_millis(200);
+const HESITATE: Duration = Duration::from_millis(500);
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -28,13 +28,13 @@ use crate::store::{KeyRow, Store};
 
 /// "Hopper navy": the box takes the user's terminal palette (a dark navy
 /// lifted a step, its foreground as typed text). Faint text is blended from
-/// the box toward the typed colour to read at 5:1. Hardcoded on purpose.
+/// the box toward the typed colour to read at 4:1. Hardcoded on purpose.
 mod theme {
     use ratatui::style::Color;
     pub const BG: Color = Color::Rgb(0x1c, 0x2a, 0x40); // box
     pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // accents
-    pub const SUB: Color = Color::Rgb(0x91, 0x9b, 0x8f); // untyped text, 5:1 on the box
-    pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
+    pub const SUB: Color = Color::Rgb(0x7f, 0x8a, 0x83); // untyped text, 4:1 on the box
+    pub const TEXT: Color = Color::Rgb(0xd4, 0xdb, 0xc2); // typed text, a step brighter than the terminal foreground
     pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
 }
 
@@ -72,7 +72,7 @@ struct Drill<'a> {
     results: Vec<TargetResult>,
     /// Word spans of the current target judged wrong under lenient; they
     /// stay red after the caret has moved on.
-    wrong_spans: Vec<(usize, usize)>,
+    wrong_spans: Vec<WrongSpan>,
     /// Lenient: a wrong key was typed in the current word (even if fixed
     /// since), so the word counts as missed when submitted.
     word_dirty: bool,
@@ -323,7 +323,6 @@ impl Kernel {
                         self.store.complete_target(d.id, d.cur, t_ns)?;
                         d.cur += 1;
                         d.typed.clear();
-                        d.wrong_spans.clear();
                         if d.cur == d.targets.len() {
                             let results = d.results.clone();
                             let wpm = d.first_key.map_or(0.0, |t| {
@@ -372,7 +371,7 @@ impl Kernel {
         let exp = &d.expected[d.cur];
         if typed_word != &exp[ws..we] || d.word_dirty {
             d.results[d.cur].wrong_words.push(exp[ws..we].iter().collect());
-            d.wrong_spans.push((ws, we));
+            d.wrong_spans.push(WrongSpan { target: d.cur, start: ws, end: we, typed: typed_word.to_vec() });
         }
         d.word_dirty = false;
         let upto = (we + 1).min(exp.len());
@@ -548,6 +547,15 @@ fn centered(area: Rect, max_width: u16) -> Rect {
     mid
 }
 
+/// A word submitted wrong under lenient strictness: `typed` is what was
+/// typed for `expected[target][start..end]`, kept so the screen shows it.
+struct WrongSpan {
+    target: usize,
+    start: usize,
+    end: usize,
+    typed: Vec<char>,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Glyph {
     Done,
@@ -590,31 +598,42 @@ fn style(g: Glyph, faded: bool) -> Style {
 /// Glyph state of each expected character in target `i`.
 fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
     let exp = &d.expected[i];
-    exp.iter()
-        .enumerate()
-        .map(|(p, &c)| {
-            let g = if i < d.cur {
-                Glyph::Done
-            } else if i > d.cur {
-                Glyph::Pending
-            } else if p < d.typed.len() {
-                let judged_wrong = d.wrong_spans.iter().any(|&(s, e)| s <= p && p < e);
-                if d.typed[p] == c && !judged_wrong { Glyph::Done } else { Glyph::Wrong }
-            } else if p == d.typed.len() {
-                Glyph::Cursor
-            } else {
-                Glyph::Pending
-            };
-            // Show the wrong key itself where one was typed, so you see what
-            // happened; a pending space gets its dot once you hesitate on it.
-            let shown = match g {
-                Glyph::Wrong if c != ' ' => d.typed[p],
-                Glyph::Cursor if c == ' ' && d.hesitating() => '·',
-                _ => c,
-            };
-            (shown, g)
-        })
-        .collect()
+    let mut out = Vec::with_capacity(exp.len());
+    for (p, &c) in exp.iter().enumerate() {
+        if let Some(span) = d.wrong_spans.iter().find(|w| w.target == i && w.start <= p && p < w.end) {
+            // A word submitted wrong stays on screen as typed, in red; letters
+            // never typed stay faint, extra letters are appended.
+            match span.typed.get(p - span.start) {
+                Some(&t) => out.push((t, Glyph::Wrong)),
+                None => out.push((c, Glyph::Pending)),
+            }
+            if p + 1 == span.end {
+                let extra = span.typed.get(span.end - span.start..).unwrap_or(&[]);
+                out.extend(extra.iter().map(|&t| (t, Glyph::Wrong)));
+            }
+            continue;
+        }
+        let g = if i < d.cur {
+            Glyph::Done
+        } else if i > d.cur {
+            Glyph::Pending
+        } else if p < d.typed.len() {
+            if d.typed[p] == c { Glyph::Done } else { Glyph::Wrong }
+        } else if p == d.typed.len() {
+            Glyph::Cursor
+        } else {
+            Glyph::Pending
+        };
+        // Show the wrong key itself where one was typed, so you see what
+        // happened; a pending space gets its dot once you hesitate on it.
+        let shown = match g {
+            Glyph::Wrong if c != ' ' => d.typed[p],
+            Glyph::Cursor if c == ' ' && d.hesitating() => '·',
+            _ => c,
+        };
+        out.push((shown, g));
+    }
+    out
 }
 
 /// Greedy word wrap of what is on screen (all words, or the current
