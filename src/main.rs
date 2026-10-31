@@ -81,6 +81,13 @@ enum Cmd {
     },
     /// Print the data directory.
     Data,
+    /// Stats report with the progress graph (runs the Python tool in analysis/.venv).
+    /// Options pass through: --tag X, --days N, --min N, --open, --no-graph.
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Stats { args: Vec<String> },
+    /// Prepare a book: `teepee book 1342 --name pride` (Gutenberg id or a text file).
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Book { args: Vec<String> },
     /// Delete the database (drills, keystrokes, tags). Books are kept.
     Reset {
         /// Skip the confirmation prompt.
@@ -93,8 +100,11 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, keep_case: false });
     let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
-    if let Cmd::Reset { yes } = cmd {
-        return reset(yes); // before Store::open, which would recreate the file
+    match &cmd {
+        Cmd::Reset { yes } => return reset(*yes), // before Store::open, which would recreate the file
+        Cmd::Stats { args } => return python_tool("teepee-stats", args),
+        Cmd::Book { args } => return python_tool("teepee-book", args),
+        _ => {}
     }
 
     let store = Store::open(&paths::db_path())?;
@@ -136,7 +146,7 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Reset { .. } => unreachable!("handled above"),
+        Cmd::Reset { .. } | Cmd::Stats { .. } | Cmd::Book { .. } => unreachable!("handled above"),
         Cmd::Tags => {
             println!("{}", describe_tags(&tags));
             Ok(())
@@ -200,6 +210,28 @@ fn main() -> Result<()> {
             run(store, tags, afk, vec![Box::new(mode)])
         }
     }
+}
+
+/// Run one of the Python tools from the analysis venv next to this source
+/// tree, passing arguments through and inheriting the terminal.
+fn python_tool(name: &str, args: &[String]) -> Result<()> {
+    let exe = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("analysis/.venv/bin").join(name);
+    if !exe.exists() {
+        bail!(
+            "{} not found; set up the analysis venv:\n  cd {}/analysis && python3 -m venv .venv && .venv/bin/pip install .",
+            exe.display(),
+            env!("CARGO_MANIFEST_DIR")
+        );
+    }
+    let status = std::process::Command::new(&exe)
+        .args(args)
+        .env("TEEPEE_DATA_DIR", paths::data_dir())
+        .status()
+        .with_context(|| format!("running {}", exe.display()))?;
+    if !status.success() {
+        bail!("{name} exited with {status}");
+    }
+    Ok(())
 }
 
 fn reset(yes: bool) -> Result<()> {

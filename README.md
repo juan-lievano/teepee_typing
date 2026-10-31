@@ -79,19 +79,22 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 ## Stats
 
 ```sh
-cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run after editing (editable installs are skipped by Python 3.15)
-ln -sf "$PWD/.venv/bin/teepee-stats" "$PWD/.venv/bin/teepee-book" ~/.local/bin/   # put them on PATH
-.venv/bin/teepee-stats                  # the report: graph inline (wpm per drill, per-word survival over the last 100), then
-                                        # overview, last 10/50/100 master drills, missed words, slow words, slow trigrams
-.venv/bin/teepee-stats --open           # graph in the image viewer instead;  --no-graph for tables only
-.venv/bin/teepee-stats --tag voyager --days 7
-.venv/bin/teepee-book 1342 --name pride     # Pride and Prejudice from Gutenberg
+teepee stats                 # graph inline (wpm per drill, per-word survival over the last 100), then
+                             # overview, last 10/50/100 master drills, missed words, slow words, slow trigrams
+teepee stats --open          # graph in the image viewer;  --no-graph for tables only
+teepee stats --tag voyager --days 7
+teepee book 1342 --name pride   # Pride and Prejudice from Gutenberg, into data/books/
 ```
 
-The report's progress measure for master mode is per-word survival: words
-completed divided by words attempted. It predicts finishing odds directly
-(survival to the 50th power for a 50-word drill) and doesn't depend on one
-lucky long run.
+Both run the Python package in `analysis/`, set up once with:
+
+```sh
+cd analysis && python3 -m venv .venv && .venv/bin/pip install .   # re-run `pip install .` after editing
+```
+
+The progress measure for master mode is per-word survival: words completed
+divided by words attempted. It predicts finishing odds directly (survival to
+the 50th power for a 50-word drill) and doesn't depend on one lucky long run.
 
 ## Build
 
