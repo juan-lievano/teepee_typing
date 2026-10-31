@@ -11,9 +11,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
-use crate::mode::{Mode, Strictness};
+use crate::mode::Mode;
 use crate::modes::literature::Literature;
 use crate::modes::master::Master;
+use crate::modes::sprint::Sprint;
 use crate::runner::Kernel;
 use crate::store::Store;
 
@@ -49,16 +50,21 @@ enum Cmd {
         #[arg(long)]
         keep_case: bool,
     },
-    /// Type a book one sentence at a time.
+    /// Random words at normal difficulty: wrong keys are let through and
+    /// nothing is practised. For going after a personal best; a fresh drill
+    /// follows each one.
+    Sprint {
+        /// Word list: english 200, 1k, 5k or 10k.
+        #[arg(long, default_value = "200", value_parser = words::LIST_NAMES.to_vec())]
+        list: String,
+        /// Words per drill.
+        #[arg(long, default_value_t = 50)]
+        words: usize,
+    },
+    /// Type a book one line at a time: a sentence of prose, a verse of poetry.
     Lit {
-        /// Name of a file in the books directory, without `.txt`.
-        book: String,
-        /// Sentences per drill.
-        #[arg(long, default_value_t = 10)]
-        sentences: usize,
-        /// How mistakes are judged.
-        #[arg(long, value_enum, default_value_t = Strictness::Expert)]
-        strict: Strictness,
+        /// Book name (or a unique prefix of it). Omit it to pick from a list.
+        book: Option<String>,
     },
     /// List available books.
     Books,
@@ -82,7 +88,7 @@ enum Cmd {
     /// Print the data directory.
     Data,
     /// Stats report with the progress graph (runs the Python tool in analysis/.venv).
-    /// Options pass through: --tag X, --days N, --min N, --open, --no-graph.
+    /// Options pass through: --tag X, --days N, --min N, --open.
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Stats { args: Vec<String> },
     /// Prepare a book: `teepee book 1342 --name pride` (Gutenberg id or a text file).
@@ -126,24 +132,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Books => {
-            let dir = paths::books_dir();
-            let mut names: Vec<String> = std::fs::read_dir(&dir)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .filter_map(|e| {
-                            let p = e.path();
-                            (p.extension()? == "txt").then(|| p.file_stem()?.to_str().map(String::from))?
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            names.sort();
-            if names.is_empty() {
-                println!("no books in {}", dir.display());
-            }
-            for n in names {
-                println!("{n}");
-            }
+            list_books(&store)?;
             Ok(())
         }
         Cmd::Reset { .. } | Cmd::Stats { .. } | Cmd::Book { .. } => unreachable!("handled above"),
@@ -190,26 +179,148 @@ fn main() -> Result<()> {
         }
         Cmd::Master { list, words, keep_case } => {
             let list = words::list(&list, keep_case).expect("clap validated the list name");
+            store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
             run(store, tags, afk, vec![Box::new(Master::new(list, words))])
         }
-        Cmd::Lit { book, sentences, strict } => {
-            let path = paths::books_dir().join(format!("{book}.txt"));
-            let text = std::fs::read_to_string(&path)
-                .with_context(|| format!("reading {} (see `teepee books`)", path.display()))?;
-            let lines: Vec<String> =
-                text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
-            if lines.is_empty() {
-                bail!("{} has no sentences", path.display());
-            }
-            let start = store.last_completed_sentence(&book)?.map_or(0, |i| i + 1);
+        Cmd::Sprint { list, words } => {
+            let list = words::list(&list, false).expect("clap validated the list name");
+            store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
+            run(store, tags, afk, vec![Box::new(Sprint::new(list, words))])
+        }
+        Cmd::Lit { book } => {
+            let book = choose_book(&store, book)?;
+            let (lines, mtime_ms) = read_book(&book)?;
+            let meta = book_meta(&book);
+            store.register_source(&book, "book", meta.lang.as_deref(), meta.title.as_deref(), meta.origin.as_deref())?;
+            let start = store.last_completed_sentence(&book, mtime_ms)?.map_or(0, |i| i + 1);
             if start >= lines.len() {
-                println!("{book}: all {} sentences done", lines.len());
+                println!("{book}: all {} lines done", lines.len());
                 return Ok(());
             }
-            let mode = Literature::new(book, Arc::new(lines), start, sentences, strict);
+            let mode = Literature::new(book, Arc::new(lines), start);
             run(store, tags, afk, vec![Box::new(mode)])
         }
     }
+}
+
+/// Names of the prepared books, sorted.
+fn book_names() -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(paths::books_dir())
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    let p = e.path();
+                    (p.extension()? == "txt").then(|| p.file_stem()?.to_str().map(String::from))?
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// Print the books, numbered, with language, length and progress.
+fn list_books(store: &Store) -> Result<Vec<String>> {
+    let names = book_names();
+    if names.is_empty() {
+        println!("no books in {} (see `teepee book`)", paths::books_dir().display());
+    }
+    for (i, n) in names.iter().enumerate() {
+        let (lines, mtime_ms) = read_book(n)?;
+        let meta = book_meta(n);
+        let done = store.last_completed_sentence(n, mtime_ms)?.map_or(0, |i| i + 1);
+        println!(
+            "{:>2}  {n:<12} {:<4} {:>5} lines, {done} done   {}",
+            i + 1,
+            meta.lang.as_deref().unwrap_or("?"),
+            lines.len(),
+            meta.title.as_deref().unwrap_or("")
+        );
+    }
+    Ok(names)
+}
+
+/// A book name from the argument (exact name, a number from the list, or a
+/// unique prefix), or, with no argument, from the list and a prompt.
+fn choose_book(store: &Store, arg: Option<String>) -> Result<String> {
+    let names = match arg {
+        Some(a) => {
+            let names = book_names();
+            if let Some(name) = resolve_book(&names, &a) {
+                return Ok(name);
+            }
+            println!("no book matches {a:?}; these are prepared:");
+            list_books(store)?
+        }
+        None => list_books(store)?,
+    };
+    if names.is_empty() {
+        bail!("no books");
+    }
+    loop {
+        print!("book (number or name): ");
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("no book chosen");
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            bail!("no book chosen");
+        }
+        match resolve_book(&names, line) {
+            Some(name) => return Ok(name),
+            None => println!("no book matches {line:?}"),
+        }
+    }
+}
+
+/// Exact name, 1-based number, or unique case-insensitive prefix.
+fn resolve_book(names: &[String], s: &str) -> Option<String> {
+    if let Some(n) = names.iter().find(|n| *n == s) {
+        return Some(n.clone());
+    }
+    if let Ok(i) = s.parse::<usize>()
+        && (1..=names.len()).contains(&i)
+    {
+        return Some(names[i - 1].clone());
+    }
+    let s = s.to_lowercase();
+    let hits: Vec<&String> = names.iter().filter(|n| n.to_lowercase().starts_with(&s)).collect();
+    match hits.as_slice() {
+        [one] => Some((*one).clone()),
+        _ => None,
+    }
+}
+
+/// The sentences of `<books>/<name>.txt` and the file's mtime in unix ms
+/// (progress in a book only counts from when it was last prepared).
+fn read_book(name: &str) -> Result<(Vec<String>, i64)> {
+    let path = paths::books_dir().join(format!("{name}.txt"));
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {} (see `teepee books`)", path.display()))?;
+    let lines: Vec<String> = text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+    if lines.is_empty() {
+        bail!("{} has no sentences", path.display());
+    }
+    let mtime_ms = std::fs::metadata(&path)?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    Ok((lines, mtime_ms))
+}
+
+/// What teepee-book wrote next to the text, if anything.
+#[derive(Default, serde::Deserialize)]
+struct BookMeta {
+    lang: Option<String>,
+    title: Option<String>,
+    origin: Option<String>,
+}
+
+fn book_meta(name: &str) -> BookMeta {
+    let path = paths::books_dir().join(format!("{name}.json"));
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
 /// Run one of the Python tools from the analysis venv next to this source

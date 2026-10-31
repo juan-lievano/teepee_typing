@@ -34,6 +34,11 @@ impl WordList {
     }
 }
 
+/// `english_10k` for `10k`: the name used in configs, source refs and `sources`.
+pub fn full_name(short: &str) -> &'static str {
+    LISTS.iter().find(|(s, _, _)| *s == short).map_or("", |(_, name, _)| name)
+}
+
 /// `short` is one of LIST_NAMES.
 pub fn list(short: &str, keep_case: bool) -> Option<Arc<WordList>> {
     let (_, name, raw) = LISTS.iter().find(|(s, _, _)| *s == short)?;

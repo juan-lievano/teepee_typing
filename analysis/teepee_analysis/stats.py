@@ -1,16 +1,14 @@
 """teepee-stats: one report over the keystroke log.
 
-The progress graph (wpm per master drill, rolling per-word survival) is drawn
-inline in the terminal, then the tables: overview, recent master drills,
-missed words, slow words, slow trigrams.
+Tables: data size, overview, recent master drills, missed words, then slow
+words and slow trigrams per language (from the `sources` table). `--open` also draws the progress graph (wpm per master drill,
+rolling per-word survival) to a PNG and opens it in the image viewer.
 
     --tag X    only drills tagged X          --days N   look back N days (default 90)
     --min N    minimum occurrences for the word and trigram tables (default 5)
-    --open     show the graph in the image viewer instead of inline
-    --no-graph tables only
+    --open     also show the progress graph in the image viewer
 """
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +20,10 @@ from .db import connect
 # ------------------------------------------------------------------ queries
 # $days, $min, $tagfilter_d are substituted before running. The SQLite view
 # drill_summary is not used because DuckDB's sqlite reader cannot parse it.
+
+# A drill with fewer character keystrokes than this gets no wpm (same number
+# as MIN_CHARS in src/store.rs): a two-key drill lasting 4 ms is not a speed.
+MIN_CHARS = 10
 
 PER_DRILL = """
 WITH k AS (
@@ -37,22 +39,39 @@ w AS (
 SELECT d.id, d.mode, d.outcome, d.started_at_ms, d.failed_word,
        strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day,
        coalesce(w.words, 0) AS words, coalesce(k.chars_typed, 0) AS chars_typed, coalesce(k.chars_correct, 0) AS chars_correct,
-       k.chars_correct / 5.0 / nullif(k.span_ns, 0) * 60e9 AS wpm,
+       CASE WHEN k.chars_typed >= $min_chars THEN k.chars_correct / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
        k.span_ns / 1e9 AS secs
 FROM tp.drills d LEFT JOIN k ON k.drill_id = d.id LEFT JOIN w ON w.drill_id = d.id
 WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 ORDER BY d.id
 """
 
+# All time, no filters: the size of the record itself.
+ALLTIME = """
+SELECT (SELECT count(*) FROM tp.drills)                                   AS drills,
+       (SELECT count(*) FROM tp.targets)                                  AS targets,
+       (SELECT count(*) FROM tp.keystrokes)                               AS keys,
+       (SELECT count(*) FROM tp.keystrokes WHERE kind = 'char')           AS chars,
+       (SELECT count(DISTINCT strftime(to_timestamp(started_at_ms / 1000), '%Y-%m-%d')) FROM tp.drills) AS days,
+       (SELECT min(started_at_ms) FROM tp.drills)                         AS first_ms,
+       (SELECT sum(span) FROM (SELECT max(t_ns) - min(t_ns) AS span FROM tp.keystrokes GROUP BY drill_id)) AS typing_ns
+"""
+
+# A word is what sits between spaces, so a sentence's "hacienda." or
+# "carnero," is stored and practised with its punctuation (the transition
+# into the period is real typing). The word tables strip punctuation from
+# the edges so those count with "hacienda" and "carnero"; trigrams keep it.
+BARE = "regexp_replace({}, '^[^\\p{{L}}\\p{{N}}]+|[^\\p{{L}}\\p{{N}}]+$', '', 'g')"
+
 MISSED = """
 WITH seen AS (
-  SELECT t.text AS word, count(*) AS seen
+  SELECT $bare_t AS word, count(*) AS seen
   FROM tp.targets t JOIN tp.drills d ON d.id = t.drill_id
   WHERE t.kind = 'word' AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
   GROUP BY 1
 ),
 failed AS (
-  SELECT failed_word AS word, count(*) AS failed
+  SELECT $bare_f AS word, count(*) AS failed
   FROM tp.drills d
   WHERE failed_word IS NOT NULL AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
   GROUP BY 1
@@ -63,31 +82,45 @@ FROM failed f LEFT JOIN seen s ON s.word = f.word
 ORDER BY f.failed DESC, fail_pct DESC, f.word LIMIT 12
 """
 
+# Languages typed in the window: every target carries a source ref whose
+# prefix names a row in `sources`; '?' when the source was never registered.
+LANGS = """
+SELECT coalesce(s.lang, '?') AS lang, count(*) AS targets
+FROM tp.targets t JOIN tp.drills d ON d.id = t.drill_id
+LEFT JOIN tp.sources s ON s.name = split_part(t.source_ref, '#', 1)
+WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
+GROUP BY 1 ORDER BY 2 DESC
+"""
+
 WORDS = """
 WITH first AS (
   SELECT drill_id, target_idx, min(t_ns) AS t_first FROM tp.keystrokes WHERE kind = 'char' GROUP BY 1, 2
 )
-SELECT t.text AS word, count(*) AS n,
+SELECT $bare_t AS word, count(*) AS n,
        round(median((t.completed_at_ns - f.t_first) / 1e6 / length(t.text)), 0) AS ms_per_char
 FROM tp.targets t
 JOIN first f ON f.drill_id = t.drill_id AND f.target_idx = t.idx
 JOIN tp.drills d ON d.id = t.drill_id
+LEFT JOIN tp.sources s ON s.name = split_part(t.source_ref, '#', 1)
 WHERE t.kind = 'word' AND t.completed_at_ns IS NOT NULL AND d.mode <> 'practice' AND d.outcome <> 'afk'
-  AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
+  AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d $langfilter
 GROUP BY 1 HAVING n >= $min ORDER BY ms_per_char DESC LIMIT 12
 """
 
 TRIGRAMS = """
 WITH k AS (
-  SELECT drill_id, seq, typed, kind, correct, t_ns,
-         lag(typed, 2) OVER w AS c1, lag(typed, 1) OVER w AS c2,
-         lag(kind, 2) OVER w AS k1, lag(kind, 1) OVER w AS k2,
-         lag(correct, 2) OVER w AS ok1, lag(correct, 1) OVER w AS ok2,
-         t_ns - lag(t_ns, 1) OVER w AS dt
-  FROM tp.keystrokes
-  WHERE drill_id IN (SELECT id FROM tp.drills d WHERE coalesce(d.outcome, '') <> 'afk'
-                     AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d)
-  WINDOW w AS (PARTITION BY drill_id ORDER BY seq)
+  SELECT k.drill_id, k.seq, k.typed, k.kind, k.correct, k.t_ns,
+         lag(k.typed, 2) OVER w AS c1, lag(k.typed, 1) OVER w AS c2,
+         lag(k.kind, 2) OVER w AS k1, lag(k.kind, 1) OVER w AS k2,
+         lag(k.correct, 2) OVER w AS ok1, lag(k.correct, 1) OVER w AS ok2,
+         k.t_ns - lag(k.t_ns, 1) OVER w AS dt
+  FROM tp.keystrokes k
+  JOIN tp.targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
+  LEFT JOIN tp.sources s ON s.name = split_part(t.source_ref, '#', 1)
+  WHERE k.drill_id IN (SELECT id FROM tp.drills d WHERE coalesce(d.outcome, '') <> 'afk'
+                       AND d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d)
+    $langfilter
+  WINDOW w AS (PARTITION BY k.drill_id ORDER BY k.seq)
 )
 SELECT replace(c1 || c2 || typed, ' ', '␣') AS trigram, count(*) AS n,
        round(median(dt) / 1e6, 0) AS median_ms
@@ -97,12 +130,16 @@ GROUP BY 1 HAVING n >= $min ORDER BY median_ms DESC LIMIT 12
 """
 
 
-def frame(con, sql, a):
+def frame(con, sql, a, lang=None):
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
         sql.replace("$days", str(int(a.days)))
+        .replace("$min_chars", str(MIN_CHARS))
         .replace("$min", str(int(a.min)))
         .replace("$tagfilter_d", f"AND list_contains(from_json(d.tags, '[\"VARCHAR\"]'), '{tag}')" if tag else "")
+        .replace("$langfilter", f"AND coalesce(s.lang, '?') = '{lang}'" if lang else "")
+        .replace("$bare_t", BARE.format("t.text"))
+        .replace("$bare_f", BARE.format("failed_word"))
     )
     rel = con.sql(sql)
     return pl.DataFrame(rel.fetchall(), schema=rel.columns, orient="row")
@@ -155,33 +192,86 @@ def master_recent(drills: pl.DataFrame) -> pl.DataFrame:
     return pl.DataFrame(out)
 
 
+def sprint_recent(drills: pl.DataFrame) -> pl.DataFrame:
+    """Sprint drills, most recent N: best and typical wpm, accuracy."""
+    m = drills.filter((pl.col("mode") == "sprint") & (pl.col("outcome") == "completed")).sort("id")
+    if m.is_empty():
+        return m
+    rows = []
+    for n in [10, 50, m.height]:
+        if n > m.height:
+            continue
+        r = m.tail(n)
+        rows.append({
+            "last": "all" if n == m.height else str(n),
+            "drills": r.height,
+            "best_wpm": round(r["wpm"].max(), 1),
+            "median_wpm": round(r["wpm"].median(), 1),
+            "accuracy_pct": round(100 * r["chars_correct"].sum() / r["chars_typed"].sum(), 1),
+        })
+    return pl.DataFrame(rows).unique(subset=["drills"], keep="first", maintain_order=True)
+
+
+def data_size(con):
+    """How big the record is: the file on disk and what it holds, all time."""
+    from .db import data_dir
+    d = data_dir()
+    db = d / "teepee.db"
+    db_mb = db.stat().st_size / 1e6 if db.exists() else 0.0
+    snaps = sorted((d / "snapshots").glob("*.db")) if (d / "snapshots").is_dir() else []
+    snap_mb = sum(f.stat().st_size for f in snaps) / 1e6
+    books = sorted((d / "books").glob("*.txt")) if (d / "books").is_dir() else []
+    r = con.sql(ALLTIME).fetchall()[0]
+    drills, targets, keys, chars, days, first_ms, typing_ns = r
+    section("data · all time")
+    print(f"  {db}  {db_mb:.1f} MB" + (f"   snapshots {len(snaps)} · {snap_mb:.1f} MB" if snaps else "   no snapshots yet")
+          + (f"   books {len(books)}" if books else ""))
+    if not keys:
+        print("  empty")
+        return
+    import datetime as dt
+    first = dt.datetime.fromtimestamp(first_ms / 1000).strftime("%Y-%m-%d")
+    hours = (typing_ns or 0) / 3600e9
+    print(f"  since {first} · {days} days typed · {drills} drills · {targets} targets · {keys} keys pressed"
+          f" ({chars} characters) · {hours:.1f} h typing")
+    print(f"  {db_mb * 1e6 / keys:.0f} bytes per key · {keys / db_mb / 1000:.1f} k keys per MB"
+          f" · {keys / max(hours, 1e-9) / 60:.0f} keys per minute of typing")
+
+
 def report(a):
     con = connect()
+    data_size(con)
     drills = frame(con, PER_DRILL, a)
     if drills.is_empty():
         print("no drills yet")
         return
-    if not a.no_graph:
+    if a.open:
         graph(a, drills)
     judged = drills.filter(pl.col("outcome").is_in(["failed", "completed"]))
     minutes = judged["secs"].fill_null(0).sum() / 60
     section(f"overview · last {a.days} days" + (f" · tag {a.tag}" if a.tag else ""))
     print(f"  drills {drills.height}   master {(drills['mode'] == 'master').sum()}   practice {(drills['mode'] == 'practice').sum()}"
-          f"   literature {(drills['mode'] == 'literature').sum()}   afk {(drills['outcome'] == 'afk').sum()}   aborted {(drills['outcome'] == 'aborted').sum()}")
+          f"   literature {(drills['mode'] == 'literature').sum()}   sprint {(drills['mode'] == 'sprint').sum()}   afk {(drills['outcome'] == 'afk').sum()}   aborted {(drills['outcome'] == 'aborted').sum()}")
     print(f"  time typing {minutes:.0f} min   keys {drills['chars_typed'].sum()}   correct {drills['chars_correct'].sum()}"
           f"   words done {drills['words'].sum()}")
 
     section("master mode, most recent drills · survival = words completed / words attempted")
     show(master_recent(drills))
 
+    section("sprint mode, most recent drills · normal difficulty, for personal bests")
+    show(sprint_recent(drills))
+
     section("missed words · seen = times reached, failed = drills that ended on it")
     show(frame(con, MISSED, a))
 
-    section(f"slowest words · ms per character, at least {a.min} completions, master only")
-    show(frame(con, WORDS, a))
-
-    section(f"slowest trigrams · median gap before the third key, at least {a.min} occurrences")
-    show(frame(con, TRIGRAMS, a))
+    # Slow words and trigrams are a property of a language's letter patterns
+    # (and of the keyboard's accents), so they are shown per language.
+    langs = frame(con, LANGS, a)
+    for lang in langs["lang"].to_list():
+        section(f"slowest words · {lang} · ms per character, at least {a.min} completions, master only")
+        show(frame(con, WORDS, a, lang))
+        section(f"slowest trigrams · {lang} · median gap before the third key, at least {a.min} occurrences")
+        show(frame(con, TRIGRAMS, a, lang))
     print()
 
 
@@ -237,42 +327,12 @@ def graph(a, drills):
     tag = f" · {a.tag}" if a.tag else ""
     fig.suptitle(f"teepee · master mode · {n} drills{tag}", x=0.125, ha="left", color=INK, fontsize=13)
 
-    # Nothing is written to disk unless a viewer is needed; the data is the record.
-    import io
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=160, bbox_inches="tight", facecolor=S)
-    if a.open or not sys.stdout.isatty():
-        import tempfile
-        tmp = Path(tempfile.gettempdir()) / "teepee-progress.png"
-        tmp.write_bytes(buf.getvalue())
-        print(tmp)
-        subprocess.run(["open", str(tmp)], check=False)
-    else:
-        show_inline(buf.getvalue())
-
-
-def show_inline(png: bytes) -> None:
-    """Draw the PNG in the terminal with the kitty graphics protocol (Ghostty
-    supports it). Inside tmux the sequence is wrapped for passthrough, which
-    needs `set -g allow-passthrough on`."""
-    import base64
-    data = base64.standard_b64encode(png).decode("ascii")
-    in_tmux = "TMUX" in os.environ
-    def esc(payload: str) -> str:
-        seq = f"\x1b_G{payload}\x1b\\"
-        return "\x1bPtmux;" + seq.replace("\x1b", "\x1b\x1b") + "\x1b\\" if in_tmux else seq
-    try:
-        cols = min(os.get_terminal_size().columns - 2, 110)
-    except OSError:
-        cols = 100
-    chunks = [data[i:i + 4096] for i in range(0, len(data), 4096)]
-    out = []
-    for i, chunk in enumerate(chunks):
-        more = 1 if i < len(chunks) - 1 else 0
-        head = f"a=T,f=100,c={cols},m={more};" if i == 0 else f"m={more};"
-        out.append(esc(head + chunk))
-    sys.stdout.write("".join(out) + "\n")
-    sys.stdout.flush()
+    # A temp file for the viewer; the data is the record, the PNG is disposable.
+    import tempfile
+    tmp = Path(tempfile.gettempdir()) / "teepee-progress.png"
+    fig.savefig(tmp, format="png", dpi=160, bbox_inches="tight", facecolor=S)
+    print(tmp)
+    subprocess.run(["open", str(tmp)], check=False)
 
 
 def main() -> None:
@@ -280,8 +340,7 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--min", type=int, default=5)
     ap.add_argument("--tag")
-    ap.add_argument("--open", action="store_true", help="show the graph in the image viewer instead of inline")
-    ap.add_argument("--no-graph", action="store_true", help="tables only")
+    ap.add_argument("--open", action="store_true", help="also draw the progress graph and open it in the image viewer")
     a = ap.parse_args()
     report(a)
 

@@ -57,9 +57,9 @@ impl Mode for Master {
 
     fn after(&self, outcome: &Outcome) -> Vec<Followup> {
         match outcome {
-            Outcome::Completed | Outcome::Afk { .. } => vec![Followup { mode: self.fresh(), child: false }],
+            Outcome::Completed { .. } | Outcome::Afk => vec![Followup { mode: self.fresh(), child: false }],
             Outcome::Failed { target, .. } => vec![
-                Followup { mode: Box::new(Practice::new(target.text.clone())), child: true },
+                Followup { mode: Box::new(Practice::new(target.text.clone(), target.source_ref.clone())), child: true },
                 Followup { mode: self.fresh(), child: false },
             ],
             Outcome::Aborted => vec![],

@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 /// still this long, so the tail of the word you were typing can't fail the
 /// practice drill before you have read it.
 const SETTLE: Duration = Duration::from_millis(400);
+/// No caret: typed text is bright, untyped faint, and the first faint letter
+/// is the next one. The one ambiguity is a pending space after a finished
+/// word, so after this long without a key it is drawn as a faint dot.
+const HESITATE: Duration = Duration::from_millis(200);
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -19,22 +23,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::input::Stamped;
-use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind};
+use crate::mode::{Followup, Mode, Outcome, Strictness, Target, TargetKind, TargetResult};
 use crate::store::{KeyRow, Store};
 
-/// "Hopper navy, ice caret": the box takes the user's terminal palette
-/// (a dark navy lifted a step, the terminal's cursor blue as caret, its
-/// foreground as typed text). Faint text is blended from the box toward
-/// the typed colour to read at 5:1. Hardcoded on purpose.
+/// "Hopper navy": the box takes the user's terminal palette (a dark navy
+/// lifted a step, its foreground as typed text). Faint text is blended from
+/// the box toward the typed colour to read at 5:1. Hardcoded on purpose.
 mod theme {
     use ratatui::style::Color;
     pub const BG: Color = Color::Rgb(0x1c, 0x2a, 0x40); // box
-    pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // caret, accents
+    pub const MAIN: Color = Color::Rgb(0xaf, 0xd2, 0xf4); // accents
     pub const SUB: Color = Color::Rgb(0x91, 0x9b, 0x8f); // untyped text, 5:1 on the box
     pub const TEXT: Color = Color::Rgb(0xca, 0xd2, 0xb5); // typed text
     pub const ERROR: Color = Color::Rgb(0xee, 0x96, 0x75);
-    /// The character on the caret: deeper than the box so it cuts out cleanly.
-    pub const ON_CARET: Color = Color::Rgb(0x0f, 0x18, 0x26);
 }
 
 pub struct Kernel {
@@ -67,6 +68,14 @@ struct Drill<'a> {
     first_key: Option<Instant>,
     last_key: Option<Instant>,
     correct_chars: usize,
+    /// Per target: keys typed, keys accepted, words submitted wrong.
+    results: Vec<TargetResult>,
+    /// Word spans of the current target judged wrong under lenient; they
+    /// stay red after the caret has moved on.
+    wrong_spans: Vec<(usize, usize)>,
+    /// Lenient: a wrong key was typed in the current word (even if fixed
+    /// since), so the word counts as missed when submitted.
+    word_dirty: bool,
     banner: Option<String>,
     tags: String,
     /// While set, keys arriving sooner than SETTLE after the previous one are
@@ -86,8 +95,20 @@ impl Kernel {
             }
             match &outcome {
                 Outcome::Failed { word, .. } => banner = Some(format!("missed  {word}")),
-                Outcome::Afk { .. } => banner = Some("paused too long, drill void".to_string()),
-                _ => {}
+                Outcome::Afk => banner = Some("paused too long, drill void".to_string()),
+                Outcome::Completed { results, wpm } => {
+                    let chars: usize = results.iter().map(|r| r.chars).sum();
+                    let correct: usize = results.iter().map(|r| r.correct).sum();
+                    let acc = if chars == 0 { 100.0 } else { 100.0 * correct as f64 / chars as f64 };
+                    let wrong: Vec<&str> =
+                        results.iter().flat_map(|r| r.wrong_words.iter().map(String::as_str)).collect();
+                    let mut b = format!("{wpm:.0} wpm · {acc:.0}%");
+                    if !wrong.is_empty() {
+                        b.push_str(&format!("   missed  {}", wrong.join(", ")));
+                    }
+                    banner = Some(b);
+                }
+                Outcome::Aborted => {}
             }
             for Followup { mode, child } in mode.after(&outcome).into_iter().rev() {
                 queue.push_front(Queued { mode, parent: child.then_some(id) });
@@ -106,8 +127,9 @@ impl Kernel {
         let id = self.store.begin_drill(mode.name(), parent, &mode.config(), &self.tags)?;
         let t0 = Instant::now();
         if targets.is_empty() {
-            self.store.end_drill(id, &Outcome::Completed, 0)?;
-            return Ok((id, Outcome::Completed));
+            let outcome = Outcome::Completed { results: Vec::new(), wpm: 0.0 };
+            self.store.end_drill(id, &outcome, 0)?;
+            return Ok((id, outcome));
         }
         let expected = targets.iter().map(Target::expected).collect();
         let n = targets.len();
@@ -124,6 +146,9 @@ impl Kernel {
             first_key: None,
             last_key: None,
             correct_chars: 0,
+            results: vec![TargetResult::default(); n],
+            wrong_spans: Vec::new(),
+            word_dirty: false,
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
@@ -134,20 +159,27 @@ impl Kernel {
             self.mark_shown(&mut d)?;
             self.terminal.draw(|f| draw(f, &d))?;
 
-            // While settling, wake up when the quiet period completes so the
-            // fade lifts even if no key arrives.
-            let stamped = match d.settle_last_input {
-                Some(last) => {
-                    let remaining = SETTLE.saturating_sub(last.elapsed());
-                    match self.rx.recv_timeout(remaining) {
-                        Ok(st) => st,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            d.settle_last_input = None;
-                            continue;
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
+            // Wake up without a key when the settle period ends (the fade
+            // lifts) or when a pending space has waited long enough to show
+            // its dot; either way just redraw.
+            let wake = match d.settle_last_input {
+                Some(last) => Some(SETTLE.saturating_sub(last.elapsed())),
+                None if d.next_is_space() && !d.hesitating() => {
+                    d.last_key.map(|t| HESITATE.saturating_sub(t.elapsed()))
                 }
+                None => None,
+            };
+            let stamped = match wake {
+                Some(remaining) => match self.rx.recv_timeout(remaining) {
+                    Ok(st) => st,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        if d.settle_last_input.is_some_and(|last| last.elapsed() >= SETTLE) {
+                            d.settle_last_input = None;
+                        }
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                },
                 None => self.rx.recv()?,
             };
             let Stamped { at, event } = stamped;
@@ -180,7 +212,7 @@ impl Kernel {
             {
                 // The key that ends the pause is dropped: the drill is void and
                 // the screen is about to change.
-                return self.finish(&d, t_ns, Outcome::Afk { target_idx: d.cur });
+                return self.finish(&d, t_ns, Outcome::Afk);
             }
             if matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace) {
                 d.last_key = Some(at);
@@ -191,8 +223,20 @@ impl Kernel {
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     return self.finish(&d, t_ns, Outcome::Aborted);
                 }
+                // Alt/Ctrl+Backspace, Ctrl+W and Ctrl+Alt+H delete the word
+                // being typed, like readline. Logged as a backspace named `word`.
+                KeyCode::Backspace if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    self.delete_word(&mut d, t_ns)?;
+                }
+                KeyCode::Char('w') if key.modifiers == KeyModifiers::CONTROL => {
+                    self.delete_word(&mut d, t_ns)?;
+                }
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    self.delete_word(&mut d, t_ns)?;
+                }
                 KeyCode::Backspace => {
-                    if d.typed.pop().is_some() {
+                    if d.typed.len() > word_floor(&d, strictness) {
+                        d.typed.pop();
                         let pos = d.typed.len();
                         self.record(&d, t_ns, pos, None, "backspace", None)?;
                         d.seq += 1;
@@ -214,53 +258,78 @@ impl Kernel {
                     d.first_key.get_or_insert(at);
                     let pos = d.typed.len();
                     let exp = &d.expected[d.cur];
-                    let want = exp.get(pos).copied();
-                    let correct = want == Some(c);
+                    let matched = exp.get(pos) == Some(&c);
+
+                    // Judge first, record second. `correct` means the kernel
+                    // accepted the key as progress, so the key that ends a
+                    // failed drill is always recorded as 0, whichever rule
+                    // rejected it. `rejected` carries the word to practise.
+                    let rejected: Option<String> = match strictness {
+                        Strictness::Master if !matched => {
+                            let (ws, we) = word_span(exp, pos.min(exp.len().saturating_sub(1)));
+                            Some(exp[ws..we].iter().collect())
+                        }
+                        _ => None,
+                    };
+
+                    let correct = matched && rejected.is_none();
                     self.record(&d, t_ns, pos, Some(c), "char", Some(correct))?;
                     d.seq += 1;
-
-                    // Expert: a space submits the current word.
-                    if strictness == Strictness::Expert && c == ' ' {
-                        let (ws, we) = word_span(exp, pos);
-                        let word_ok = pos == we && d.typed[ws..pos] == exp[ws..we];
-                        if !word_ok {
-                            let word: String = exp[ws..we].iter().collect();
-                            return self.fail(&d, t_ns, word);
-                        }
-                    }
-
+                    d.results[d.cur].chars += 1;
                     if correct {
-                        d.correct_chars += 1;
-                        d.typed.push(c);
-                    } else {
-                        match strictness {
-                            Strictness::Master => {
-                                let (ws, we) = word_span(exp, pos.min(exp.len().saturating_sub(1)));
-                                let word: String = exp[ws..we].iter().collect();
-                                return self.fail(&d, t_ns, word);
+                        d.results[d.cur].correct += 1;
+                    }
+                    if let Some(word) = rejected {
+                        return self.fail(&d, t_ns, word);
+                    }
+
+                    if strictness == Strictness::Lenient && c == ' ' {
+                        // A space submits the word; right or wrong, the caret
+                        // moves to the next expected word. With nothing typed
+                        // for the word yet (a double tap) it does nothing.
+                        let ws = word_floor(&d, strictness);
+                        if ws < exp.len() && ws < d.typed.len() {
+                            if matched {
+                                d.correct_chars += 1;
                             }
-                            Strictness::Lenient | Strictness::Expert => {
-                                if pos < exp.len() {
-                                    d.typed.push(c);
-                                }
+                            let (_, we) = word_span(exp, ws);
+                            let typed_word = d.typed[ws..].to_vec();
+                            self.submit_word(&mut d, ws, we, &typed_word);
+                        }
+                    } else {
+                        if matched {
+                            d.correct_chars += 1;
+                            d.typed.push(c);
+                        } else if pos < exp.len() {
+                            // Lenient keeps the wrong key on screen.
+                            d.typed.push(c);
+                            d.word_dirty = true;
+                        }
+                        // Lenient, last key of the target: no space will
+                        // come, so the last word is submitted now.
+                        let len = exp.len();
+                        if strictness == Strictness::Lenient && d.typed.len() == len {
+                            let ws = word_floor(&d, strictness);
+                            let last_ws = word_span(exp, len - 1).0;
+                            if ws == last_ws && ws < len {
+                                let typed_word = d.typed[ws..].to_vec();
+                                self.submit_word(&mut d, ws, len, &typed_word);
                             }
                         }
                     }
 
-                    if d.typed.len() == exp.len() {
-                        if d.typed == *exp {
-                            self.store.complete_target(d.id, d.cur, t_ns)?;
-                            d.cur += 1;
-                            d.typed.clear();
-                            if d.cur == d.targets.len() {
-                                return self.finish(&d, t_ns, Outcome::Completed);
-                            }
-                        } else if strictness == Strictness::Expert {
-                            // Sentence ends on a wrong last word: no space will
-                            // ever come, so judge it now.
-                            let (ws, we) = word_span(exp, exp.len() - 1);
-                            let word: String = exp[ws..we].iter().collect();
-                            return self.fail(&d, t_ns, word);
+                    let exp = &d.expected[d.cur];
+                    if d.typed.len() == exp.len() && d.typed == *exp {
+                        self.store.complete_target(d.id, d.cur, t_ns)?;
+                        d.cur += 1;
+                        d.typed.clear();
+                        d.wrong_spans.clear();
+                        if d.cur == d.targets.len() {
+                            let results = d.results.clone();
+                            let wpm = d.first_key.map_or(0.0, |t| {
+                                d.correct_chars as f64 / 5.0 / (t.elapsed().as_secs_f64().max(0.5) / 60.0)
+                            });
+                            return self.finish(&d, t_ns, Outcome::Completed { results, wpm });
                         }
                     }
                 }
@@ -272,6 +341,43 @@ impl Kernel {
                 }
             }
         }
+    }
+
+    /// Drop the trailing spaces and then the word before them from what has
+    /// been typed for the current target; nothing happens (and nothing is
+    /// logged) when there is nothing to delete.
+    fn delete_word(&self, d: &mut Drill, t_ns: i64) -> Result<()> {
+        let floor = word_floor(d, d.mode.strictness());
+        let mut n = d.typed.len();
+        while n > floor && d.typed[n - 1] == ' ' {
+            n -= 1;
+        }
+        while n > floor && d.typed[n - 1] != ' ' {
+            n -= 1;
+        }
+        if n == d.typed.len() {
+            return Ok(());
+        }
+        d.typed.truncate(n);
+        self.record_named(d, t_ns, n, "word".to_string(), "backspace")?;
+        d.seq += 1;
+        Ok(())
+    }
+
+    /// Lenient: judge the word typed for `exp[ws..we]`; it is missed if it
+    /// differs or if any wrong key was typed in it along the way. Then resync
+    /// `typed` to the expected text up to and including the separator, so
+    /// the caret is on the next word whatever was typed.
+    fn submit_word(&self, d: &mut Drill, ws: usize, we: usize, typed_word: &[char]) {
+        let exp = &d.expected[d.cur];
+        if typed_word != &exp[ws..we] || d.word_dirty {
+            d.results[d.cur].wrong_words.push(exp[ws..we].iter().collect());
+            d.wrong_spans.push((ws, we));
+        }
+        d.word_dirty = false;
+        let upto = (we + 1).min(exp.len());
+        d.typed.truncate(ws);
+        d.typed.extend_from_slice(&exp[ws..upto]);
     }
 
     /// A keystroke row for a key that is not a typed character: `typed` holds
@@ -332,13 +438,22 @@ impl Kernel {
     }
 
     fn fail(&self, d: &Drill, t_ns: i64, word: String) -> Result<(i64, Outcome)> {
-        let outcome = Outcome::Failed { target_idx: d.cur, target: d.targets[d.cur].clone(), word };
+        let outcome = Outcome::Failed { target: d.targets[d.cur].clone(), word };
         self.finish(d, t_ns, outcome)
     }
 
     fn finish(&self, d: &Drill, t_ns: i64, outcome: Outcome) -> Result<(i64, Outcome)> {
         self.store.end_drill(d.id, &outcome, t_ns)?;
         Ok((d.id, outcome))
+    }
+}
+
+/// How far back a backspace may go: under lenient a submitted word is
+/// final, so no further than the start of the current word; elsewhere 0.
+fn word_floor(d: &Drill, strictness: Strictness) -> usize {
+    match strictness {
+        Strictness::Lenient => d.typed.iter().rposition(|&c| c == ' ').map_or(0, |i| i + 1),
+        _ => 0,
     }
 }
 
@@ -437,8 +552,21 @@ fn centered(area: Rect, max_width: u16) -> Rect {
 enum Glyph {
     Done,
     Wrong,
+    /// The next expected character; drawn like Pending, but it places the
+    /// window and, for a space, carries the hesitation dot.
     Cursor,
     Pending,
+}
+
+impl Drill<'_> {
+    fn next_is_space(&self) -> bool {
+        self.expected[self.cur].get(self.typed.len()) == Some(&' ')
+    }
+
+    /// No key for HESITATE since the last one.
+    fn hesitating(&self) -> bool {
+        self.last_key.is_some_and(|t| t.elapsed() >= HESITATE)
+    }
 }
 
 /// Pull a colour toward the box background; `t` = 0 leaves it, 1 hides it.
@@ -455,8 +583,7 @@ fn style(g: Glyph, faded: bool) -> Style {
     match g {
         Glyph::Done => Style::default().fg(toward_bg(theme::TEXT, t)),
         Glyph::Wrong => Style::default().fg(toward_bg(theme::ERROR, t)),
-        Glyph::Pending => Style::default().fg(toward_bg(theme::SUB, t)),
-        Glyph::Cursor => Style::default().fg(toward_bg(theme::ON_CARET, t)).bg(toward_bg(theme::MAIN, t)),
+        Glyph::Pending | Glyph::Cursor => Style::default().fg(toward_bg(theme::SUB, t)),
     }
 }
 
@@ -471,14 +598,20 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
             } else if i > d.cur {
                 Glyph::Pending
             } else if p < d.typed.len() {
-                if d.typed[p] == c { Glyph::Done } else { Glyph::Wrong }
+                let judged_wrong = d.wrong_spans.iter().any(|&(s, e)| s <= p && p < e);
+                if d.typed[p] == c && !judged_wrong { Glyph::Done } else { Glyph::Wrong }
             } else if p == d.typed.len() {
                 Glyph::Cursor
             } else {
                 Glyph::Pending
             };
-            // Show the wrong key itself where one was typed, so you see what happened.
-            let shown = if g == Glyph::Wrong && c != ' ' { d.typed[p] } else { c };
+            // Show the wrong key itself where one was typed, so you see what
+            // happened; a pending space gets its dot once you hesitate on it.
+            let shown = match g {
+                Glyph::Wrong if c != ' ' => d.typed[p],
+                Glyph::Cursor if c == ' ' && d.hesitating() => '·',
+                _ => c,
+            };
             (shown, g)
         })
         .collect()

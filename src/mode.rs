@@ -42,46 +42,54 @@ impl Target {
     }
 }
 
-/// How the kernel treats mistakes. Same three levels as Monkeytype's
-/// difficulty setting; the kernel implements all three, a mode picks one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+/// How the kernel treats mistakes: Monkeytype's "normal" and "master"
+/// difficulties. The kernel implements both, a mode picks one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strictness {
-    /// Wrong keys show in red and must be corrected before the target can finish.
+    /// Wrong keys show in red; a space moves on to the next word whether or
+    /// not the word was right. Missed words are reported to the mode in the
+    /// outcome, which decides what to do about them.
     Lenient,
-    /// Wrong keys are tolerated inside a word; pressing space on a wrong or
-    /// incomplete word ends the drill.
-    Expert,
     /// The first wrong key ends the drill.
     Master,
 }
 
-impl Strictness {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Strictness::Lenient => "lenient",
-            Strictness::Expert => "expert",
-            Strictness::Master => "master",
-        }
+/// What happened on one target, reported to the mode when a drill completes.
+#[derive(Clone, Debug, Default)]
+pub struct TargetResult {
+    /// Character keystrokes on the target, and how many the kernel accepted.
+    pub chars: usize,
+    pub correct: usize,
+    /// Words submitted wrong (lenient strictness only), in order.
+    pub wrong_words: Vec<String>,
+}
+
+impl TargetResult {
+    /// Percent of character keys accepted; 100 when nothing was typed.
+    pub fn accuracy(&self) -> f64 {
+        if self.chars == 0 { 100.0 } else { 100.0 * self.correct as f64 / self.chars as f64 }
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum Outcome {
-    Completed,
+    /// One result per target, in order, and the drill's words per minute
+    /// (accepted keys / 5, over the time from first to last key).
+    Completed { results: Vec<TargetResult>, wpm: f64 },
     /// `word` is the word that caused the failure: the target itself for a
     /// word target, the offending word for a sentence.
-    Failed { target_idx: usize, target: Target, word: String },
+    Failed { target: Target, word: String },
     /// A long pause mid-drill; the drill is void and its mode restarts.
-    Afk { target_idx: usize },
+    Afk,
     Aborted,
 }
 
 impl Outcome {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Outcome::Completed => "completed",
+            Outcome::Completed { .. } => "completed",
             Outcome::Failed { .. } => "failed",
-            Outcome::Afk { .. } => "afk",
+            Outcome::Afk => "afk",
             Outcome::Aborted => "aborted",
         }
     }

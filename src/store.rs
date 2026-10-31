@@ -39,6 +39,17 @@ CREATE TABLE IF NOT EXISTS targets (
   PRIMARY KEY (drill_id, idx)
 );
 
+-- One row per word list or book, keyed by the part of targets.source_ref
+-- before '#'. Word lists are seeded here; a book is registered by `teepee lit`
+-- from its <name>.json sidecar written by teepee-book.
+CREATE TABLE IF NOT EXISTS sources (
+  name   TEXT PRIMARY KEY,                -- english_10k, pride, quijote
+  kind   TEXT NOT NULL,                   -- wordlist | book
+  lang   TEXT,                            -- ISO 639-1 (en, es); NULL when unknown
+  title  TEXT,
+  origin TEXT                             -- monkeytype, gutenberg:2000, a file name
+);
+
 CREATE TABLE IF NOT EXISTS keystrokes (
   drill_id   INTEGER NOT NULL REFERENCES drills(id),
   seq        INTEGER NOT NULL,
@@ -48,25 +59,36 @@ CREATE TABLE IF NOT EXISTS keystrokes (
   expected   TEXT,                         -- NULL when typing past the end
   typed      TEXT,                         -- the key; NULL for backspace; a name like ctrl+x for modified/other
   kind       TEXT    NOT NULL,             -- char | backspace | ignored (settle) | modified (ctrl/alt+key) | other (enter, tab, ...)
-  correct    INTEGER,                      -- NULL for backspace
+  correct    INTEGER,                      -- 1 if the kernel accepted the key as progress; the key that ends a failed drill is 0; NULL for backspace
   PRIMARY KEY (drill_id, seq)
 );
 CREATE INDEX IF NOT EXISTS keystrokes_by_target ON keystrokes(drill_id, target_idx);
+"#;
 
-CREATE VIEW IF NOT EXISTS drill_summary AS
+/// Derived per-drill numbers. Recreated on every open so the definition in
+/// the binary is the one in the file. WPM and accuracy are NULL for drills
+/// shorter than MIN_CHARS characters: two keys in 4 ms is not a speed.
+const SUMMARY_VIEW: &str = r#"
+DROP VIEW IF EXISTS drill_summary;
+CREATE VIEW drill_summary AS
 SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
        COUNT(*) FILTER (WHERE k.kind = 'char')                          AS chars_typed,
        COALESCE(SUM(k.correct) FILTER (WHERE k.kind = 'char'), 0)       AS chars_correct,
        (MAX(k.t_ns) - MIN(k.t_ns)) / 1e9                                 AS typing_secs,
-       CASE WHEN MAX(k.t_ns) > MIN(k.t_ns) THEN
+       CASE WHEN COUNT(*) FILTER (WHERE k.kind = 'char') >= MIN_CHARS AND MAX(k.t_ns) > MIN(k.t_ns) THEN
          (SUM(k.correct) FILTER (WHERE k.kind = 'char')) / 5.0
            / ((MAX(k.t_ns) - MIN(k.t_ns)) / 60e9) END                    AS wpm,
-       CASE WHEN COUNT(*) FILTER (WHERE k.kind = 'char') > 0 THEN
+       CASE WHEN COUNT(*) FILTER (WHERE k.kind = 'char') >= MIN_CHARS THEN
          100.0 * SUM(k.correct) FILTER (WHERE k.kind = 'char')
            / (COUNT(*) FILTER (WHERE k.kind = 'char')) END               AS accuracy
 FROM drills d LEFT JOIN keystrokes k ON k.drill_id = d.id
 GROUP BY d.id;
 "#;
+
+/// A drill with fewer character keystrokes than this gets no WPM or
+/// accuracy (its keystrokes and outcome still count). teepee-stats applies
+/// the same number.
+pub const MIN_CHARS: usize = 10;
 
 /// Columns added after the first release; each is applied once.
 fn migrate(conn: &Connection) -> Result<()> {
@@ -81,6 +103,13 @@ fn migrate(conn: &Connection) -> Result<()> {
         .exists([])?;
     if !has_tags {
         conn.execute_batch("ALTER TABLE drills ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';")?;
+    }
+    for list in crate::words::LIST_NAMES {
+        let name = crate::words::full_name(list);
+        conn.execute(
+            "INSERT OR IGNORE INTO sources (name, kind, lang, title, origin) VALUES (?1, 'wordlist', 'en', ?2, 'monkeytype')",
+            params![name, format!("Monkeytype {}", name.replace('_', " "))],
+        )?;
     }
     Ok(())
 }
@@ -114,6 +143,7 @@ impl Store {
              PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(&SUMMARY_VIEW.replace("MIN_CHARS", &MIN_CHARS.to_string()))?;
         migrate(&conn)?;
         Ok(Store { conn })
     }
@@ -274,17 +304,39 @@ impl Store {
         Ok(Some(dest))
     }
 
-    /// Highest sentence number of `book` that was typed to completion.
-    pub fn last_completed_sentence(&self, book: &str) -> Result<Option<usize>> {
+    /// Record (or update) what a source ref prefix stands for. NULL fields
+    /// never overwrite known values.
+    pub fn register_source(
+        &self,
+        name: &str,
+        kind: &str,
+        lang: Option<&str>,
+        title: Option<&str>,
+        origin: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sources (name, kind, lang, title, origin) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(name) DO UPDATE SET kind = excluded.kind,
+               lang = coalesce(excluded.lang, lang), title = coalesce(excluded.title, title),
+               origin = coalesce(excluded.origin, origin)",
+            params![name, kind, lang, title, origin],
+        )?;
+        Ok(())
+    }
+
+    /// Highest sentence number of `book` typed to completion in a drill
+    /// started at or after `since_ms` (the book file's mtime: re-preparing a
+    /// book renumbers its sentences, so older progress no longer applies).
+    pub fn last_completed_sentence(&self, book: &str, since_ms: i64) -> Result<Option<usize>> {
         let prefix = format!("{book}#");
         let v: Option<i64> = self
             .conn
             .query_row(
-                "SELECT MAX(CAST(substr(source_ref, ?2) AS INTEGER))
-                 FROM targets
-                 WHERE kind = 'sentence' AND completed_at_ns IS NOT NULL
-                   AND substr(source_ref, 1, ?3) = ?1",
-                params![prefix, prefix.len() as i64 + 1, prefix.len() as i64],
+                "SELECT MAX(CAST(substr(t.source_ref, ?2) AS INTEGER))
+                 FROM targets t JOIN drills d ON d.id = t.drill_id
+                 WHERE t.kind = 'sentence' AND t.completed_at_ns IS NOT NULL
+                   AND substr(t.source_ref, 1, ?3) = ?1 AND d.started_at_ms >= ?4",
+                params![prefix, prefix.len() as i64 + 1, prefix.len() as i64, since_ms],
                 |r| r.get(0),
             )
             .optional()?
