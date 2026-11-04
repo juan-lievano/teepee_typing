@@ -74,7 +74,8 @@ impl TargetResult {
 #[derive(Clone, Debug)]
 pub enum Outcome {
     /// One result per target, in order, and the drill's words per minute
-    /// (accepted keys / 5, over the time from first to last key).
+    /// (Monkeytype's: characters of the words that ended up right, the space
+    /// after each included, / 5, over the time from first to last key).
     Completed { results: Vec<TargetResult>, wpm: f64 },
     /// `word` is the word that caused the failure: the target itself for a
     /// word target, the offending word for a sentence.

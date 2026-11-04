@@ -88,9 +88,11 @@ teepee copies the database as it ended the previous month to
 | `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`, `backspace` with typed `word` for a word delete, `ignored`, `modified` for ctrl/alt combos, `other` for enter/tab/arrows), correct (the key was accepted as progress; the key that ends a failed drill is always 0) |
 
 `drill_summary` is a view deriving WPM and accuracy from keystrokes, with
-Monkeytype's split: accuracy counts every character keystroke, WPM only the
-characters standing at the end (a keystroke stands until a later key lands at
-or before its position), so retyping a word does not count it twice. Both
+Monkeytype's definitions: accuracy counts every character keystroke; WPM
+counts the characters of the words that ended up right, the space after each
+included, and nothing for a word that ended up wrong (a keystroke stands until
+a later key lands at or before its position, and a word is right when no wrong
+key stands in it). `words_wrong` is the count of the others. Both
 are NULL for drills under 10 character keystrokes (`MIN_CHARS` in
 `src/store.rs`, same number in `teepee-stats`), since two keys 4 ms apart is
 not a speed. Short drills keep their keystrokes and outcome.

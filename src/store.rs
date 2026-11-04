@@ -69,39 +69,55 @@ CREATE INDEX IF NOT EXISTS keystrokes_by_target ON keystrokes(drill_id, target_i
 /// the binary is the one in the file. WPM and accuracy are NULL for drills
 /// shorter than MIN_CHARS characters: two keys in 4 ms is not a speed.
 ///
-/// Monkeytype's split: accuracy counts every character keystroke, WPM only
-/// the characters standing at the end. A keystroke stands until a later key
-/// lands at or before its position (a backspace, or the character typed in
-/// its place), so a word typed, deleted and typed again counts once. The
-/// same rule is in teepee-stats.
+/// Monkeytype's definitions. Accuracy counts every character keystroke. WPM
+/// counts the characters of words that ended up right, the space after each
+/// included, and nothing for a word that ended up wrong. A keystroke stands
+/// until a later key lands at or before its position (a backspace, or the
+/// character typed in its place); a word is right when no wrong key stands
+/// in it, and is then worth its standing keys, so a word still being typed
+/// when the drill ended is worth what was typed. The same rule is in
+/// teepee-stats.
 const SUMMARY_VIEW: &str = r#"
 DROP VIEW IF EXISTS drill_summary;
 CREATE VIEW drill_summary AS
 WITH k AS (
-  SELECT drill_id, kind, correct, t_ns, pos,
-         MIN(pos) OVER (PARTITION BY drill_id, target_idx ORDER BY seq
-                        ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
-  FROM keystrokes WHERE kind IN ('char', 'backspace')
+  SELECT k.drill_id, k.target_idx, k.kind, k.correct, k.t_ns, k.pos,
+         length(substr(t.text, 1, k.pos)) - length(replace(substr(t.text, 1, k.pos), ' ', '')) AS word,
+         MIN(k.pos) OVER (PARTITION BY k.drill_id, k.target_idx ORDER BY k.seq
+                          ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
+  FROM keystrokes k JOIN targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
+  WHERE k.kind IN ('char', 'backspace')
+),
+w AS (
+  SELECT drill_id, target_idx, word,
+         COALESCE(SUM(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS standing_right,
+         COUNT(*) FILTER (WHERE kind = 'char' AND correct = 0 AND (later_pos IS NULL OR later_pos > pos)) AS standing_wrong
+  FROM k GROUP BY drill_id, target_idx, word
 ),
 s AS (
-  SELECT drill_id,
+  SELECT k.drill_id,
          COUNT(*) FILTER (WHERE kind = 'char')                                     AS chars_typed,
          COALESCE(SUM(correct) FILTER (WHERE kind = 'char'), 0)                    AS chars_correct,
-         COALESCE(SUM(correct) FILTER (WHERE kind = 'char'
-                                         AND (later_pos IS NULL OR later_pos > pos)), 0) AS chars_final,
          MAX(t_ns) FILTER (WHERE kind = 'char') - MIN(t_ns) FILTER (WHERE kind = 'char') AS span_ns
-  FROM k GROUP BY drill_id
+  FROM k GROUP BY k.drill_id
+),
+c AS (
+  SELECT drill_id,
+         SUM(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored,
+         COUNT(*) FILTER (WHERE standing_wrong > 0)                      AS words_wrong
+  FROM w GROUP BY drill_id
 )
 SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
        COALESCE(s.chars_typed, 0)   AS chars_typed,
        COALESCE(s.chars_correct, 0) AS chars_correct,
-       COALESCE(s.chars_final, 0)   AS chars_final,
+       COALESCE(c.chars_scored, 0)  AS chars_scored,
+       COALESCE(c.words_wrong, 0)   AS words_wrong,
        s.span_ns / 1e9              AS typing_secs,
        CASE WHEN s.chars_typed >= MIN_CHARS AND s.span_ns > 0 THEN
-         s.chars_final / 5.0 / (s.span_ns / 60e9) END                      AS wpm,
+         c.chars_scored / 5.0 / (s.span_ns / 60e9) END                     AS wpm,
        CASE WHEN s.chars_typed >= MIN_CHARS THEN
          100.0 * s.chars_correct / s.chars_typed END                       AS accuracy
-FROM drills d LEFT JOIN s ON s.drill_id = d.id;
+FROM drills d LEFT JOIN s ON s.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id;
 "#;
 
 /// A drill with fewer character keystrokes than this gets no WPM or

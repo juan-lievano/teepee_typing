@@ -32,24 +32,39 @@ from .db import connect
 MIN_CHARS = 10
 
 PER_DRILL = """
--- Monkeytype's split: accuracy counts every character keystroke, wpm only
--- the characters standing at the end. A keystroke stands until a later key
--- lands at or before its position (a backspace, or the character typed in
--- its place), so a word typed, deleted and typed again counts once. Same
--- rule as drill_summary in src/store.rs.
+-- Monkeytype's definitions. Accuracy counts every character keystroke. wpm
+-- counts the characters of words that ended up right, the space after each
+-- included, and nothing for a word that ended up wrong. A keystroke stands
+-- until a later key lands at or before its position (a backspace, or the
+-- character typed in its place); a word is right when no wrong key stands in
+-- it, and is then worth its standing keys. Same rule as drill_summary in
+-- src/store.rs.
 WITH kk AS (
-  SELECT drill_id, kind, correct, t_ns, pos,
-         min(pos) OVER (PARTITION BY drill_id, target_idx ORDER BY seq
-                        ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
-  FROM tp.keystrokes WHERE kind IN ('char', 'backspace')
+  SELECT k.drill_id, k.target_idx, k.kind, k.correct, k.t_ns, k.pos,
+         length(substr(t.text, 1, k.pos)) - length(replace(substr(t.text, 1, k.pos), ' ', '')) AS word,
+         min(k.pos) OVER (PARTITION BY k.drill_id, k.target_idx ORDER BY k.seq
+                          ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
+  FROM tp.keystrokes k JOIN tp.targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
+  WHERE k.kind IN ('char', 'backspace')
+),
+ww AS (
+  SELECT drill_id, target_idx, word,
+         coalesce(sum(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS standing_right,
+         count(*) FILTER (WHERE kind = 'char' AND correct = 0 AND (later_pos IS NULL OR later_pos > pos)) AS standing_wrong
+  FROM kk GROUP BY drill_id, target_idx, word
 ),
 k AS (
   SELECT drill_id,
          count(*) FILTER (WHERE kind = 'char')                                        AS chars_typed,
          coalesce(sum(correct) FILTER (WHERE kind = 'char'), 0)                       AS chars_correct,
-         coalesce(sum(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS chars_final,
          max(t_ns) FILTER (WHERE kind = 'char') - min(t_ns) FILTER (WHERE kind = 'char') AS span_ns
   FROM kk GROUP BY drill_id
+),
+c AS (
+  SELECT drill_id,
+         sum(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored,
+         count(*) FILTER (WHERE standing_wrong > 0)                      AS words_wrong
+  FROM ww GROUP BY drill_id
 ),
 w AS (
   SELECT drill_id, count(*) AS words FROM tp.targets WHERE completed_at_ns IS NOT NULL GROUP BY drill_id
@@ -57,10 +72,10 @@ w AS (
 SELECT d.id, d.mode, d.outcome, d.started_at_ms, d.failed_word, json_extract_string(d.config, '$.book') AS book,
        strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day,
        coalesce(w.words, 0) AS words, coalesce(k.chars_typed, 0) AS chars_typed, coalesce(k.chars_correct, 0) AS chars_correct,
-       coalesce(k.chars_final, 0) AS chars_final,
-       CASE WHEN k.chars_typed >= $min_chars THEN k.chars_final / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
+       coalesce(c.chars_scored, 0) AS chars_scored, coalesce(c.words_wrong, 0) AS words_wrong,
+       CASE WHEN k.chars_typed >= $min_chars THEN c.chars_scored / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
        k.span_ns / 1e9 AS secs
-FROM tp.drills d LEFT JOIN k ON k.drill_id = d.id LEFT JOIN w ON w.drill_id = d.id
+FROM tp.drills d LEFT JOIN k ON k.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id LEFT JOIN w ON w.drill_id = d.id
 WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
 ORDER BY d.id
 """
@@ -324,7 +339,7 @@ def master_recent(drills: pl.DataFrame) -> pl.DataFrame:
 
 
 def sprint_recent(drills: pl.DataFrame) -> pl.DataFrame:
-    """Sprint drills, most recent N: best and typical wpm, accuracy."""
+    """Sprint drills, most recent N: best and typical wpm, accuracy, words that ended up wrong."""
     m = drills.filter((pl.col("mode") == "sprint") & (pl.col("outcome") == "completed")).sort("id")
     if m.is_empty():
         return m
@@ -339,6 +354,7 @@ def sprint_recent(drills: pl.DataFrame) -> pl.DataFrame:
             "best_wpm": round(r["wpm"].max(), 1),
             "median_wpm": round(r["wpm"].median(), 1),
             "accuracy_pct": round(100 * r["chars_correct"].sum() / r["chars_typed"].sum(), 1),
+            "words_wrong_per_drill": round(r["words_wrong"].mean(), 1),
         })
     return pl.DataFrame(rows).unique(subset=["drills"], keep="first", maintain_order=True)
 

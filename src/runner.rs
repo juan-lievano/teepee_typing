@@ -67,9 +67,10 @@ struct Drill<'a> {
     seq: i64,
     first_key: Option<Instant>,
     last_key: Option<Instant>,
-    /// Per finished target: characters standing correct at the end (what
-    /// wpm counts); 0 while the target is current or reopened.
-    target_correct: Vec<usize>,
+    /// Per finished target: the characters wpm counts, those of its words
+    /// that ended up right (Monkeytype's rule, see `live_scored`); 0 while
+    /// the target is current or reopened.
+    target_scored: Vec<usize>,
     /// Per target: keys typed, keys accepted. Missed words are added from
     /// `wrong_spans` when the drill completes.
     results: Vec<TargetResult>,
@@ -147,7 +148,7 @@ impl Kernel {
             seq: 0,
             first_key: None,
             last_key: None,
-            target_correct: vec![0; n],
+            target_scored: vec![0; n],
             results: vec![TargetResult::default(); n],
             wrong_spans: Vec::new(),
             settle_last_input: banner.is_some().then_some(t0),
@@ -257,7 +258,7 @@ impl Kernel {
                         // Nothing typed yet: back into the previous word
                         // target, which is no longer complete.
                         d.cur -= 1;
-                        d.target_correct[d.cur] = 0;
+                        d.target_scored[d.cur] = 0;
                         self.store.uncomplete_target(d.id, d.cur)?;
                         let exp = &d.expected[d.cur];
                         d.typed = exp[..exp.len() - 1].to_vec();
@@ -339,7 +340,7 @@ impl Kernel {
                     let exp = &d.expected[d.cur];
                     if d.typed.len() == exp.len() && d.typed == *exp {
                         self.store.complete_target(d.id, d.cur, t_ns)?;
-                        d.target_correct[d.cur] = live_correct(&d);
+                        d.target_scored[d.cur] = live_scored(&d);
                         d.cur += 1;
                         d.typed.clear();
                         if d.cur == d.targets.len() {
@@ -349,9 +350,9 @@ impl Kernel {
                             for s in spans {
                                 results[s.target].wrong_words.push(d.expected[s.target][s.start..s.end].iter().collect());
                             }
-                            let correct: usize = d.target_correct.iter().sum();
+                            let scored: usize = d.target_scored.iter().sum();
                             let wpm = d.first_key.map_or(0.0, |t| {
-                                correct as f64 / 5.0 / (t.elapsed().as_secs_f64().max(0.5) / 60.0)
+                                scored as f64 / 5.0 / (t.elapsed().as_secs_f64().max(0.5) / 60.0)
                             });
                             return self.finish(&d, t_ns, Outcome::Completed { results, wpm });
                         }
@@ -497,16 +498,25 @@ fn reopen(d: &mut Drill, n: usize) {
     }
 }
 
-/// Characters of the current target standing correct right now. After a
-/// resync `typed` holds the expected text for every submitted word, so a
-/// word judged wrong is counted from what was really typed, and its
-/// separator counts against it.
-fn live_correct(d: &Drill) -> usize {
+/// What the current target is worth to wpm so far, Monkeytype's rule: a
+/// word that ended up right is worth its characters and the space after it,
+/// a word that ended up wrong (a wrong span, or a wrong letter standing in
+/// the word being typed) is worth nothing. After a resync `typed` holds the
+/// expected text for every submitted word, so a submitted word is judged by
+/// its span and the word being typed by its letters.
+fn live_scored(d: &Drill) -> usize {
     let exp = &d.expected[d.cur];
-    let mut n = d.typed.iter().zip(exp).filter(|(a, b)| a == b).count();
-    for s in d.wrong_spans.iter().filter(|s| s.target == d.cur) {
-        n -= (s.end + 1).min(d.typed.len()).saturating_sub(s.start);
-        n += s.typed.iter().enumerate().filter(|&(i, c)| s.start + i < s.end && exp[s.start + i] == *c).count();
+    let mut n = 0;
+    let mut i = 0;
+    while i < d.typed.len() {
+        let (ws, we) = word_span(exp, i);
+        let upto = (we + 1).min(d.typed.len());
+        let wrong = d.wrong_spans.iter().any(|s| s.target == d.cur && s.start == ws)
+            || d.typed[ws..upto] != exp[ws..upto];
+        if !wrong {
+            n += upto - ws;
+        }
+        i = upto.max(i + 1);
     }
     n
 }
@@ -585,8 +595,8 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     let wpm = match d.first_key {
         Some(t) if t.elapsed().as_secs_f64() > 0.5 => {
-            let correct = d.target_correct.iter().sum::<usize>() + live_correct(d);
-            correct as f64 / 5.0 / (t.elapsed().as_secs_f64() / 60.0)
+            let scored = d.target_scored.iter().sum::<usize>() + live_scored(d);
+            scored as f64 / 5.0 / (t.elapsed().as_secs_f64() / 60.0)
         }
         _ => 0.0,
     };
