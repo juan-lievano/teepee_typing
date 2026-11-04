@@ -67,15 +67,15 @@ struct Drill<'a> {
     seq: i64,
     first_key: Option<Instant>,
     last_key: Option<Instant>,
-    correct_chars: usize,
-    /// Per target: keys typed, keys accepted, words submitted wrong.
+    /// Per finished target: characters standing correct at the end (what
+    /// wpm counts); 0 while the target is current or reopened.
+    target_correct: Vec<usize>,
+    /// Per target: keys typed, keys accepted. Missed words are added from
+    /// `wrong_spans` when the drill completes.
     results: Vec<TargetResult>,
-    /// Word spans of the current target judged wrong under lenient; they
-    /// stay red after the caret has moved on.
+    /// Words judged wrong under lenient, as typed; they stay red after the
+    /// caret has moved on, until a backspace reopens the word.
     wrong_spans: Vec<WrongSpan>,
-    /// Lenient: a wrong key was typed in the current word (even if fixed
-    /// since), so the word counts as missed when submitted.
-    word_dirty: bool,
     banner: Option<String>,
     tags: String,
     /// While set, keys arriving sooner than SETTLE after the previous one are
@@ -97,6 +97,8 @@ impl Kernel {
                 Outcome::Failed { word, .. } => banner = Some(format!("missed  {word}")),
                 Outcome::Afk => banner = Some("paused too long, drill void".to_string()),
                 Outcome::Completed { results, wpm } => {
+                    // Accuracy counts every keypress, as Monkeytype does: a
+                    // mistake you fixed still costs here, not in the wpm.
                     let chars: usize = results.iter().map(|r| r.chars).sum();
                     let correct: usize = results.iter().map(|r| r.correct).sum();
                     let acc = if chars == 0 { 100.0 } else { 100.0 * correct as f64 / chars as f64 };
@@ -145,10 +147,9 @@ impl Kernel {
             seq: 0,
             first_key: None,
             last_key: None,
-            correct_chars: 0,
+            target_correct: vec![0; n],
             results: vec![TargetResult::default(); n],
             wrong_spans: Vec::new(),
-            word_dirty: false,
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
@@ -235,11 +236,35 @@ impl Kernel {
                     self.delete_word(&mut d, t_ns)?;
                 }
                 KeyCode::Backspace => {
-                    if d.typed.len() > word_floor(&d, strictness) {
+                    let start = if strictness == Strictness::Lenient { word_start(&d.typed) } else { 0 };
+                    if d.typed.len() > start {
                         d.typed.pop();
                         let pos = d.typed.len();
                         self.record(&d, t_ns, pos, None, "backspace", None)?;
                         d.seq += 1;
+                    } else if strictness == Strictness::Lenient && start > 0 {
+                        // At the start of a word: reopen the one before it,
+                        // as typed, for correction. Its separator goes.
+                        d.typed.pop();
+                        let pos = d.typed.len();
+                        self.record(&d, t_ns, pos, None, "backspace", None)?;
+                        d.seq += 1;
+                        reopen(&mut d, pos);
+                    } else if strictness == Strictness::Lenient
+                        && d.cur > 0
+                        && d.targets[d.cur - 1].kind == TargetKind::Word
+                    {
+                        // Nothing typed yet: back into the previous word
+                        // target, which is no longer complete.
+                        d.cur -= 1;
+                        d.target_correct[d.cur] = 0;
+                        self.store.uncomplete_target(d.id, d.cur)?;
+                        let exp = &d.expected[d.cur];
+                        d.typed = exp[..exp.len() - 1].to_vec();
+                        let pos = d.typed.len();
+                        self.record(&d, t_ns, pos, None, "backspace", None)?;
+                        d.seq += 1;
+                        reopen(&mut d, pos);
                     }
                 }
                 // Ctrl/Alt combos are not typing, but they are evidence (a
@@ -287,33 +312,26 @@ impl Kernel {
                         // A space submits the word; right or wrong, the caret
                         // moves to the next expected word. With nothing typed
                         // for the word yet (a double tap) it does nothing.
-                        let ws = word_floor(&d, strictness);
+                        let ws = word_start(&d.typed);
                         if ws < exp.len() && ws < d.typed.len() {
-                            if matched {
-                                d.correct_chars += 1;
-                            }
                             let (_, we) = word_span(exp, ws);
                             let typed_word = d.typed[ws..].to_vec();
-                            self.submit_word(&mut d, ws, we, &typed_word);
+                            submit_word(&mut d, ws, we, &typed_word);
                         }
                     } else {
-                        if matched {
-                            d.correct_chars += 1;
-                            d.typed.push(c);
-                        } else if pos < exp.len() {
+                        if matched || pos < exp.len() {
                             // Lenient keeps the wrong key on screen.
                             d.typed.push(c);
-                            d.word_dirty = true;
                         }
                         // Lenient, last key of the target: no space will
                         // come, so the last word is submitted now.
                         let len = exp.len();
                         if strictness == Strictness::Lenient && d.typed.len() == len {
-                            let ws = word_floor(&d, strictness);
+                            let ws = word_start(&d.typed);
                             let last_ws = word_span(exp, len - 1).0;
                             if ws == last_ws && ws < len {
                                 let typed_word = d.typed[ws..].to_vec();
-                                self.submit_word(&mut d, ws, len, &typed_word);
+                                submit_word(&mut d, ws, len, &typed_word);
                             }
                         }
                     }
@@ -321,12 +339,19 @@ impl Kernel {
                     let exp = &d.expected[d.cur];
                     if d.typed.len() == exp.len() && d.typed == *exp {
                         self.store.complete_target(d.id, d.cur, t_ns)?;
+                        d.target_correct[d.cur] = live_correct(&d);
                         d.cur += 1;
                         d.typed.clear();
                         if d.cur == d.targets.len() {
-                            let results = d.results.clone();
+                            let mut results = d.results.clone();
+                            let mut spans: Vec<&WrongSpan> = d.wrong_spans.iter().collect();
+                            spans.sort_by_key(|s| (s.target, s.start));
+                            for s in spans {
+                                results[s.target].wrong_words.push(d.expected[s.target][s.start..s.end].iter().collect());
+                            }
+                            let correct: usize = d.target_correct.iter().sum();
                             let wpm = d.first_key.map_or(0.0, |t| {
-                                d.correct_chars as f64 / 5.0 / (t.elapsed().as_secs_f64().max(0.5) / 60.0)
+                                correct as f64 / 5.0 / (t.elapsed().as_secs_f64().max(0.5) / 60.0)
                             });
                             return self.finish(&d, t_ns, Outcome::Completed { results, wpm });
                         }
@@ -343,40 +368,24 @@ impl Kernel {
     }
 
     /// Drop the trailing spaces and then the word before them from what has
-    /// been typed for the current target; nothing happens (and nothing is
-    /// logged) when there is nothing to delete.
+    /// been typed for the current target (at the start of a word that is
+    /// the previous word, which is then open again); nothing happens (and
+    /// nothing is logged) when there is nothing to delete.
     fn delete_word(&self, d: &mut Drill, t_ns: i64) -> Result<()> {
-        let floor = word_floor(d, d.mode.strictness());
         let mut n = d.typed.len();
-        while n > floor && d.typed[n - 1] == ' ' {
+        while n > 0 && d.typed[n - 1] == ' ' {
             n -= 1;
         }
-        while n > floor && d.typed[n - 1] != ' ' {
+        while n > 0 && d.typed[n - 1] != ' ' {
             n -= 1;
         }
         if n == d.typed.len() {
             return Ok(());
         }
-        d.typed.truncate(n);
         self.record_named(d, t_ns, n, "word".to_string(), "backspace")?;
         d.seq += 1;
+        reopen(d, n);
         Ok(())
-    }
-
-    /// Lenient: judge the word typed for `exp[ws..we]`; it is missed if it
-    /// differs or if any wrong key was typed in it along the way. Then resync
-    /// `typed` to the expected text up to and including the separator, so
-    /// the caret is on the next word whatever was typed.
-    fn submit_word(&self, d: &mut Drill, ws: usize, we: usize, typed_word: &[char]) {
-        let exp = &d.expected[d.cur];
-        if typed_word != &exp[ws..we] || d.word_dirty {
-            d.results[d.cur].wrong_words.push(exp[ws..we].iter().collect());
-            d.wrong_spans.push(WrongSpan { target: d.cur, start: ws, end: we, typed: typed_word.to_vec() });
-        }
-        d.word_dirty = false;
-        let upto = (we + 1).min(exp.len());
-        d.typed.truncate(ws);
-        d.typed.extend_from_slice(&exp[ws..upto]);
     }
 
     /// A keystroke row for a key that is not a typed character: `typed` holds
@@ -447,13 +456,59 @@ impl Kernel {
     }
 }
 
-/// How far back a backspace may go: under lenient a submitted word is
-/// final, so no further than the start of the current word; elsewhere 0.
-fn word_floor(d: &Drill, strictness: Strictness) -> usize {
-    match strictness {
-        Strictness::Lenient => d.typed.iter().rposition(|&c| c == ' ').map_or(0, |i| i + 1),
-        _ => 0,
+/// Where the word being typed starts: after the last separator typed.
+fn word_start(typed: &[char]) -> usize {
+    typed.iter().rposition(|&c| c == ' ').map_or(0, |i| i + 1)
+}
+
+/// Lenient: judge the word typed for `exp[ws..we]` on what it ends up as;
+/// it is missed if it differs. Then resync `typed` to the expected text up
+/// to and including the separator, so the caret is on the next word
+/// whatever was typed.
+fn submit_word(d: &mut Drill, ws: usize, we: usize, typed_word: &[char]) {
+    let exp = &d.expected[d.cur];
+    if typed_word != &exp[ws..we] {
+        d.wrong_spans.push(WrongSpan { target: d.cur, start: ws, end: we, typed: typed_word.to_vec() });
     }
+    let upto = (we + 1).min(exp.len());
+    d.typed.truncate(ws);
+    d.typed.extend_from_slice(&exp[ws..upto]);
+}
+
+/// Cut `typed` back to `n` characters. A submitted word whose separator
+/// (at its `end`) is cut is open again: the one ending exactly at `n` comes
+/// back as it was typed, to be corrected; any later one is simply gone.
+fn reopen(d: &mut Drill, n: usize) {
+    d.typed.truncate(n);
+    let cur = d.cur;
+    let mut i = 0;
+    while i < d.wrong_spans.len() {
+        let s = &d.wrong_spans[i];
+        if s.target == cur && s.end >= n {
+            if s.start < n {
+                let typed = s.typed.clone();
+                d.typed.truncate(s.start);
+                d.typed.extend_from_slice(&typed);
+            }
+            d.wrong_spans.remove(i);
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Characters of the current target standing correct right now. After a
+/// resync `typed` holds the expected text for every submitted word, so a
+/// word judged wrong is counted from what was really typed, and its
+/// separator counts against it.
+fn live_correct(d: &Drill) -> usize {
+    let exp = &d.expected[d.cur];
+    let mut n = d.typed.iter().zip(exp).filter(|(a, b)| a == b).count();
+    for s in d.wrong_spans.iter().filter(|s| s.target == d.cur) {
+        n -= (s.end + 1).min(d.typed.len()).saturating_sub(s.start);
+        n += s.typed.iter().enumerate().filter(|&(i, c)| s.start + i < s.end && exp[s.start + i] == *c).count();
+    }
+    n
 }
 
 /// `[start, end)` of the word in `exp` that contains position `pos`, where
@@ -530,7 +585,8 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     let wpm = match d.first_key {
         Some(t) if t.elapsed().as_secs_f64() > 0.5 => {
-            d.correct_chars as f64 / 5.0 / (t.elapsed().as_secs_f64() / 60.0)
+            let correct = d.target_correct.iter().sum::<usize>() + live_correct(d);
+            correct as f64 / 5.0 / (t.elapsed().as_secs_f64() / 60.0)
         }
         _ => 0.0,
     };

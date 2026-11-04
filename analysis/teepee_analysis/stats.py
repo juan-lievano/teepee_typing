@@ -1,14 +1,20 @@
-"""teepee-stats: one report over the keystroke log.
+"""teepee-stats: the exercise you last played, or the whole record.
 
-Tables: data size, overview, recent master drills, missed words, then slow
-words and slow trigrams per language (from the `sources` table). `--open` also draws the progress graph (wpm per master drill,
+By default one box: the mode of the last drill (and the book, for
+literature), with a histogram of its wpm, oldest on the left, all time:
+one bar per drill up to 40 drills, then 40 equal groups with their means. `--full` prints the long report
+instead: data size, overview, recent master drills, sprint bests, missed
+words, then slow words and slow trigrams per language (from the `sources`
+table). `--open` also draws the progress graph (wpm per master drill,
 rolling per-word survival) to a PNG and opens it in the image viewer.
 
-    --tag X    only drills tagged X          --days N   look back N days (default 90)
-    --min N    minimum occurrences for the word and trigram tables (default 5)
+    --full     the long report              --days N   look back N days (default: all; 90 with --full)
+    --tag X    only drills tagged X          --min N    minimum occurrences for the word and trigram tables (default 5)
     --open     also show the progress graph in the image viewer
 """
 import argparse
+import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,20 +32,33 @@ from .db import connect
 MIN_CHARS = 10
 
 PER_DRILL = """
-WITH k AS (
+-- Monkeytype's split: accuracy counts every character keystroke, wpm only
+-- the characters standing at the end. A keystroke stands until a later key
+-- lands at or before its position (a backspace, or the character typed in
+-- its place), so a word typed, deleted and typed again counts once. Same
+-- rule as drill_summary in src/store.rs.
+WITH kk AS (
+  SELECT drill_id, kind, correct, t_ns, pos,
+         min(pos) OVER (PARTITION BY drill_id, target_idx ORDER BY seq
+                        ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
+  FROM tp.keystrokes WHERE kind IN ('char', 'backspace')
+),
+k AS (
   SELECT drill_id,
-         count(*) FILTER (WHERE kind = 'char')                 AS chars_typed,
-         coalesce(sum(correct) FILTER (WHERE kind = 'char'), 0) AS chars_correct,
+         count(*) FILTER (WHERE kind = 'char')                                        AS chars_typed,
+         coalesce(sum(correct) FILTER (WHERE kind = 'char'), 0)                       AS chars_correct,
+         coalesce(sum(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS chars_final,
          max(t_ns) FILTER (WHERE kind = 'char') - min(t_ns) FILTER (WHERE kind = 'char') AS span_ns
-  FROM tp.keystrokes GROUP BY drill_id
+  FROM kk GROUP BY drill_id
 ),
 w AS (
   SELECT drill_id, count(*) AS words FROM tp.targets WHERE completed_at_ns IS NOT NULL GROUP BY drill_id
 )
-SELECT d.id, d.mode, d.outcome, d.started_at_ms, d.failed_word,
+SELECT d.id, d.mode, d.outcome, d.started_at_ms, d.failed_word, json_extract_string(d.config, '$.book') AS book,
        strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day,
        coalesce(w.words, 0) AS words, coalesce(k.chars_typed, 0) AS chars_typed, coalesce(k.chars_correct, 0) AS chars_correct,
-       CASE WHEN k.chars_typed >= $min_chars THEN k.chars_correct / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
+       coalesce(k.chars_final, 0) AS chars_final,
+       CASE WHEN k.chars_typed >= $min_chars THEN k.chars_final / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
        k.span_ns / 1e9 AS secs
 FROM tp.drills d LEFT JOIN k ON k.drill_id = d.id LEFT JOIN w ON w.drill_id = d.id
 WHERE d.started_at_ms >= epoch_ms(now() - INTERVAL ($days) DAY) $tagfilter_d
@@ -158,7 +177,7 @@ GROUP BY 1 HAVING n >= $min ORDER BY ms_per_gap DESC LIMIT $limit
 def frame(con, sql, a, lang=None, delay=0.0, n=1, limit=12):
     tag = a.tag.replace("'", "''") if a.tag else None
     sql = (
-        sql.replace("$days", str(int(a.days)))
+        sql.replace("$days", str(int(a.days if a.days is not None else 36500)))
         .replace("$hold", HOLD_KEYS)
         .replace("$delay", repr(float(delay)))
         .replace("$n", str(int(n)))
@@ -171,8 +190,91 @@ def frame(con, sql, a, lang=None, delay=0.0, n=1, limit=12):
         .replace("$bare_f", BARE.format("failed_word"))
     )
     rel = con.sql(sql)
-    return pl.DataFrame(rel.fetchall(), schema=rel.columns, orient="row")
+    return pl.DataFrame(rel.fetchall(), schema=rel.columns, orient="row", infer_schema_length=None)
 
+
+
+# ------------------------------------------------------------------ quick view
+# One box, like cordelia's: the exercise of the last drill played, and its
+# wpm in the order the drills were typed: one bar per drill up to BARS
+# drills, then BARS equal groups of the record with the mean of each.
+
+BARS = 40   # most bars; past that many drills, that many groups
+BAR = 2     # columns wide
+FILL = "▓"  # dark shade: a full block is too bright in a light font
+PAD = 2     # columns between the box's edge and its contents
+MAX_ROWS = 20
+
+def latest_exercise(con):
+    """(mode, book) of the last drill that was not a practice rep; practice belongs to the drill that spawned it."""
+    r = con.sql("SELECT mode, json_extract_string(config, '$.book') FROM tp.drills WHERE mode <> 'practice' ORDER BY id DESC LIMIT 1").fetchall()
+    return r[0] if r else (None, None)
+
+
+def exercise_drills(drills: pl.DataFrame, mode, book):
+    """The judged drills of one exercise, oldest first. A failed drill still has a speed."""
+    d = drills.filter((pl.col("mode") == mode) & pl.col("outcome").is_in(["failed", "completed"]))
+    if book is not None:
+        d = d.filter(pl.col("book") == book)
+    return d.sort("id")
+
+
+def histogram(vals):
+    """Bars of `vals` (None for an empty group) on a wpm axis clipped to the data: floor and ceiling at
+    multiples of 10, the row step the smallest of 1/2/5/10 that fits in MAX_ROWS rows, labels every 10."""
+    present = [v for v in vals if v is not None]
+    lo = int(min(present) // 10 * 10)
+    hi = int(-(-max(present) // 10) * 10)
+    hi = max(hi, lo + 10)
+    step = next(s for s in (1, 2, 5, 10, 20, 50) if (hi - lo) / s <= MAX_ROWS)
+    lines = []
+    y = hi
+    while y > lo:
+        cells = [FILL * BAR if v is not None and v >= y - 1e-9 else " " * BAR for v in vals]
+        label = f"{y:>3.0f}" if y % (10 if step >= 5 else 5) == 0 else "   "
+        lines.append(label + " │ " + " ".join(cells))
+        y -= step
+    lines.append(f"{lo:>3.0f} └─" + "─" * ((BAR + 1) * len(vals) - 1) + "  ")   # the slack keeps the right edge off the bars
+    return "\n".join(lines)
+
+
+def box(title, body):
+    """The body in a rounded box with the title set into its top edge, centred on the terminal."""
+    lines = body.split("\n")
+    width = max(len(title) + 4, *(len(l) for l in lines)) + 2 * PAD
+    top = "╭─ " + title + " " + "─" * (width - len(title) - 3) + "╮"
+    mid = ["│" + " " * PAD + l.ljust(width - 2 * PAD) + " " * PAD + "│" for l in ["", *lines, ""]]
+    bottom = "╰" + "─" * width + "╯"
+    margin = " " * max(0, (shutil.get_terminal_size().columns - width - 2) // 2) if sys.stdout.isatty() else ""
+    return "\n".join(margin + l for l in [top, *mid, bottom])
+
+
+def quick(a, con, drills):
+    mode, book = latest_exercise(con)
+    if mode is None:
+        print("no drills yet")
+        return
+    name = f"{mode} · {book}" if book else mode
+    d = exercise_drills(drills, mode, book)
+    wpm = d["wpm"].drop_nulls()
+    if wpm.len() < 2:
+        print(f"{name}: not enough drills yet")
+        return
+    n = d.height
+    bars = min(n, BARS)
+    bins = [[] for _ in range(bars)]
+    for i, w in enumerate(d["wpm"].to_list()):
+        if w is not None:
+            bins[i * bars // n].append(w)
+    means = [sum(b) / len(b) if b else None for b in bins]
+    what = "lines" if mode == "literature" else "drills"
+    per_bar = "a bar per drill" if n <= BARS else f"each bar the mean of ~{n / BARS:.0f}"
+    title = f"{name} · {n} {what} · median {wpm.median():.0f} wpm · best {wpm.max():.0f} · {per_bar}"
+    if a.days is not None:
+        title += f" · last {a.days} days"
+    if a.tag:
+        title += f" · {a.tag}"
+    print("\n" + box(title, histogram(means)) + "\n")
 
 # ------------------------------------------------------------------ report
 
@@ -269,6 +371,14 @@ def data_size(con):
 
 def report(a):
     con = connect()
+    if not a.full:
+        drills = frame(con, PER_DRILL, a)
+        quick(a, con, drills)
+        if a.open:
+            graph(a, drills)
+        return
+    if a.days is None:
+        a.days = 90
     data_size(con)
     drills = frame(con, PER_DRILL, a)
     if drills.is_empty():
@@ -369,7 +479,8 @@ def graph(a, drills):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--days", type=int, default=90)
+    ap.add_argument("--full", action="store_true", help="the long report instead of the one box")
+    ap.add_argument("--days", type=int, default=None, help="look back N days (default: all; 90 with --full)")
     ap.add_argument("--min", type=int, default=5)
     ap.add_argument("--tag")
     ap.add_argument("--open", action="store_true", help="also draw the progress graph and open it in the image viewer")

@@ -57,15 +57,15 @@ for half a second.
 A **mode** decides what you type: master (random words), sprint (random words,
 nothing is practised), practice (one word
 repeated), literature (a book's sentences in order: after each sentence every
-word that had a wrong key in it is practised, even if it was fixed before
-submitting, then the sentence is repeated if its accuracy, keys accepted over
-keys typed, was below 95% (`MIN_ACCURACY` in `src/modes/literature.rs`), else
-the book moves on). **Strictness** decides how mistakes are judged, Monkeytype's
+word that ended up wrong is practised (a word fixed before its space, or by
+going back to it, is fine), then the sentence is repeated if its accuracy,
+keys accepted over keys typed, was below 95% (`MIN_ACCURACY` in
+`src/modes/literature.rs`), else the book moves on). **Strictness** decides how mistakes are judged, Monkeytype's
 "normal" and "master":
 
 | level   | behaviour |
 |---------|-----------|
-| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint; backspace (or Alt/Ctrl+Backspace, Ctrl+W for the word) works inside the current word only. The mode gets the missed words and each sentence's accuracy when the drill ends |
+| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint. Backspace at the start of a word goes back into the word before it (in sprint, the previous word target, which is complete again once resubmitted), as typed, to correct it; a word is judged on what it ends up as. Alt/Ctrl+Backspace and Ctrl+W delete the word. The mode gets the missed words and each sentence's accuracy when the drill ends |
 | master  | the first wrong key fails the drill |
 
 The kernel (`src/runner.rs`) implements both levels once; a mode
@@ -87,7 +87,10 @@ teepee copies the database as it ended the previous month to
 | `targets`    | word or sentence reached | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `quijote#1037` (a practice word keeps the ref of the target it was missed in); words after a failure get no row |
 | `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`, `backspace` with typed `word` for a word delete, `ignored`, `modified` for ctrl/alt combos, `other` for enter/tab/arrows), correct (the key was accepted as progress; the key that ends a failed drill is always 0) |
 
-`drill_summary` is a view deriving WPM and accuracy from keystrokes; both
+`drill_summary` is a view deriving WPM and accuracy from keystrokes, with
+Monkeytype's split: accuracy counts every character keystroke, WPM only the
+characters standing at the end (a keystroke stands until a later key lands at
+or before its position), so retyping a word does not count it twice. Both
 are NULL for drills under 10 character keystrokes (`MIN_CHARS` in
 `src/store.rs`, same number in `teepee-stats`), since two keys 4 ms apart is
 not a speed. Short drills keep their keystrokes and outcome.
@@ -103,8 +106,10 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 ## Stats
 
 ```sh
-teepee stats                 # data size, overview, last 10/50/100 master drills, sprint bests, missed words,
-                             # slow words, slow trigrams
+teepee stats                 # one box: the mode you last played (and the book, for literature),
+                             # wpm per drill (40 groups once past 40), oldest left, all time
+teepee stats --full          # the long report: data size, overview, last 10/50/100 master drills,
+                             # sprint bests, missed words, slow words, slow trigrams (last 90 days)
 teepee stats --open          # also the progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7

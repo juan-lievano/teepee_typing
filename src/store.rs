@@ -68,21 +68,40 @@ CREATE INDEX IF NOT EXISTS keystrokes_by_target ON keystrokes(drill_id, target_i
 /// Derived per-drill numbers. Recreated on every open so the definition in
 /// the binary is the one in the file. WPM and accuracy are NULL for drills
 /// shorter than MIN_CHARS characters: two keys in 4 ms is not a speed.
+///
+/// Monkeytype's split: accuracy counts every character keystroke, WPM only
+/// the characters standing at the end. A keystroke stands until a later key
+/// lands at or before its position (a backspace, or the character typed in
+/// its place), so a word typed, deleted and typed again counts once. The
+/// same rule is in teepee-stats.
 const SUMMARY_VIEW: &str = r#"
 DROP VIEW IF EXISTS drill_summary;
 CREATE VIEW drill_summary AS
+WITH k AS (
+  SELECT drill_id, kind, correct, t_ns, pos,
+         MIN(pos) OVER (PARTITION BY drill_id, target_idx ORDER BY seq
+                        ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
+  FROM keystrokes WHERE kind IN ('char', 'backspace')
+),
+s AS (
+  SELECT drill_id,
+         COUNT(*) FILTER (WHERE kind = 'char')                                     AS chars_typed,
+         COALESCE(SUM(correct) FILTER (WHERE kind = 'char'), 0)                    AS chars_correct,
+         COALESCE(SUM(correct) FILTER (WHERE kind = 'char'
+                                         AND (later_pos IS NULL OR later_pos > pos)), 0) AS chars_final,
+         MAX(t_ns) FILTER (WHERE kind = 'char') - MIN(t_ns) FILTER (WHERE kind = 'char') AS span_ns
+  FROM k GROUP BY drill_id
+)
 SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
-       COUNT(*) FILTER (WHERE k.kind = 'char')                          AS chars_typed,
-       COALESCE(SUM(k.correct) FILTER (WHERE k.kind = 'char'), 0)       AS chars_correct,
-       (MAX(k.t_ns) - MIN(k.t_ns)) / 1e9                                 AS typing_secs,
-       CASE WHEN COUNT(*) FILTER (WHERE k.kind = 'char') >= MIN_CHARS AND MAX(k.t_ns) > MIN(k.t_ns) THEN
-         (SUM(k.correct) FILTER (WHERE k.kind = 'char')) / 5.0
-           / ((MAX(k.t_ns) - MIN(k.t_ns)) / 60e9) END                    AS wpm,
-       CASE WHEN COUNT(*) FILTER (WHERE k.kind = 'char') >= MIN_CHARS THEN
-         100.0 * SUM(k.correct) FILTER (WHERE k.kind = 'char')
-           / (COUNT(*) FILTER (WHERE k.kind = 'char')) END               AS accuracy
-FROM drills d LEFT JOIN keystrokes k ON k.drill_id = d.id
-GROUP BY d.id;
+       COALESCE(s.chars_typed, 0)   AS chars_typed,
+       COALESCE(s.chars_correct, 0) AS chars_correct,
+       COALESCE(s.chars_final, 0)   AS chars_final,
+       s.span_ns / 1e9              AS typing_secs,
+       CASE WHEN s.chars_typed >= MIN_CHARS AND s.span_ns > 0 THEN
+         s.chars_final / 5.0 / (s.span_ns / 60e9) END                      AS wpm,
+       CASE WHEN s.chars_typed >= MIN_CHARS THEN
+         100.0 * s.chars_correct / s.chars_typed END                       AS accuracy
+FROM drills d LEFT JOIN s ON s.drill_id = d.id;
 "#;
 
 /// A drill with fewer character keystrokes than this gets no WPM or
@@ -189,6 +208,16 @@ impl Store {
         self.conn.execute(
             "UPDATE targets SET completed_at_ns = ?3 WHERE drill_id = ?1 AND idx = ?2",
             params![drill, idx as i64, completed_at_ns],
+        )?;
+        Ok(())
+    }
+
+    /// A backspace went back into a finished word target: it will complete
+    /// again, and its completion time is the later one.
+    pub fn uncomplete_target(&self, drill: i64, idx: usize) -> Result<()> {
+        self.conn.execute(
+            "UPDATE targets SET completed_at_ns = NULL WHERE drill_id = ?1 AND idx = ?2",
+            params![drill, idx as i64],
         )?;
         Ok(())
     }
