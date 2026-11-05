@@ -251,15 +251,33 @@ def histogram(vals):
     return "\n".join(lines)
 
 
-def box(title, body):
-    """The body in a rounded box with the title set into its top edge, centred on the terminal."""
+def box_lines(title, body):
+    """The body in a rounded box with the title set into its top edge."""
     lines = body.split("\n")
     width = max(len(title) + 4, *(len(l) for l in lines)) + 2 * PAD
     top = "╭─ " + title + " " + "─" * (width - len(title) - 3) + "╮"
     mid = ["│" + " " * PAD + l.ljust(width - 2 * PAD) + " " * PAD + "│" for l in ["", *lines, ""]]
-    bottom = "╰" + "─" * width + "╯"
-    margin = " " * max(0, (shutil.get_terminal_size().columns - width - 2) // 2) if sys.stdout.isatty() else ""
-    return "\n".join(margin + l for l in [top, *mid, bottom])
+    return [top, *mid, "╰" + "─" * width + "╯"]
+
+
+def centred(lines):
+    """Lines shifted right so the block sits in the middle of the terminal (left-aligned when piped)."""
+    width = max(len(l) for l in lines)
+    margin = " " * max(0, (shutil.get_terminal_size().columns - width) // 2) if sys.stdout.isatty() else ""
+    return "\n".join(margin + l for l in lines)
+
+
+def box(title, body):
+    return centred(box_lines(title, body))
+
+
+def boxes(parts, gap=2):
+    """Several (title, body) boxes side by side when the terminal is wide enough, else one under another."""
+    blocks = [box_lines(t, b) for t, b in parts]
+    columns = shutil.get_terminal_size().columns if sys.stdout.isatty() else 10 ** 6
+    if sum(len(b[0]) for b in blocks) + gap * (len(blocks) - 1) <= columns:
+        return centred(beside(["\n".join(b) for b in blocks], " " * gap).split("\n"))
+    return "\n\n".join(centred(b) for b in blocks)
 
 
 def table(cols, rows):
@@ -425,13 +443,14 @@ def starts_table(starts: pl.DataFrame, S):
     return table(cols, rows) + f"\n\nthe gap from a space into the word's first letter, by that letter · at least {MIN_GRAM[0]} words"
 
 
-def grams_table(frames):
-    blocks = []
-    for what, f in zip(["key", "bigram", "trigram"], frames):
+def grams_boxes(frames):
+    """Three boxes, keys / bigrams / trigrams, with the method under each."""
+    parts = []
+    for what, f, m in zip(["key", "bigram", "trigram"], frames, MIN_GRAM):
         cols = [(what, "<", ""), ("n", ">", "d"), ("ms/gap", ">", ".0f")]
-        blocks.append(table(cols, [(r["gram"], r["n"], r["ms"]) for r in f.iter_rows(named=True)]) if not f.is_empty() else "(nothing yet)")
-    return beside(blocks) + ("\n\nclocked from the key before to the key after, per gap, median · lowercase letters only"
-                             f"\nat least {MIN_GRAM[0]} / {MIN_GRAM[1]} / {MIN_GRAM[2]} occurrences · delay-corrected at the window ends")
+        body = table(cols, [(r["gram"], r["n"], r["ms"]) for r in f.iter_rows(named=True)]) if not f.is_empty() else "(nothing yet)"
+        parts.append((f"slow {what}s", body + f"\n\nmedian ms per gap, clocked from the\nkey before to the key after · {m}+ seen"))
+    return parts
 
 
 def long_view(a, con, drills, mode, source):
@@ -463,8 +482,7 @@ def long_view(a, con, drills, mode, source):
     emit("slow words", pace_table(words, S, L, E))
     emit("messy words" if mode != "master" else "failed words", messy_table(words, mode))
     emit("word starts", starts_table(run(con, STARTS, **sub, min=MIN_GRAM[0]), S))
-    emit("slow keys, bigrams, trigrams",
-         grams_table([run(con, NGRAMS, **sub, n=n, min=m, limit=40 if n == 1 else TOP) for n, m in zip((1, 2, 3), MIN_GRAM)]))
+    print("\n" + boxes(grams_boxes([run(con, NGRAMS, **sub, n=n, min=m, limit=40 if n == 1 else TOP) for n, m in zip((1, 2, 3), MIN_GRAM)])))
 
 
 def exercises(drills: pl.DataFrame):
