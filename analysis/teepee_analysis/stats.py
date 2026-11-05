@@ -16,6 +16,7 @@ import argparse
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import polars as pl
@@ -251,10 +252,14 @@ def histogram(vals):
     return "\n".join(lines)
 
 
-def box_lines(title, body):
-    """The body in a rounded box with the title set into its top edge."""
+def box_lines(title, body, note=None):
+    """The body in a rounded box with the title set into its top edge; the note, if any, is word-wrapped
+    under the body to the body's width (or the title's), so the box is as wide as its data and no wider."""
     lines = body.split("\n")
-    width = max(len(title) + 4, *(len(l) for l in lines)) + 2 * PAD
+    inner = max(len(title) + 2, *(len(l) for l in lines))
+    if note:
+        lines += ["", *(w for para in note.split("\n") for w in textwrap.wrap(para, inner) or [""])]
+    width = inner + 2 * PAD
     top = "╭─ " + title + " " + "─" * (width - len(title) - 3) + "╮"
     mid = ["│" + " " * PAD + l.ljust(width - 2 * PAD) + " " * PAD + "│" for l in ["", *lines, ""]]
     return [top, *mid, "╰" + "─" * width + "╯"]
@@ -267,13 +272,13 @@ def centred(lines):
     return "\n".join(margin + l for l in lines)
 
 
-def box(title, body):
-    return centred(box_lines(title, body))
+def box(title, body, note=None):
+    return centred(box_lines(title, body, note))
 
 
 def boxes(parts, gap=2):
     """Several (title, body) boxes side by side when the terminal is wide enough, else one under another."""
-    blocks = [box_lines(t, b) for t, b in parts]
+    blocks = [box_lines(*part) for part in parts]
     columns = shutil.get_terminal_size().columns if sys.stdout.isatty() else 10 ** 6
     if sum(len(b[0]) for b in blocks) + gap * (len(blocks) - 1) <= columns:
         return centred(beside(["\n".join(b) for b in blocks], " " * gap).split("\n"))
@@ -302,8 +307,8 @@ def beside(blocks, gap="     "):
     return "\n".join(out)
 
 
-def emit(title, body):
-    print("\n" + box(title, body))
+def emit(title, body, note=None):
+    print("\n" + box(title, body, note))
 
 
 # ------------------------------------------------------------------ quick view
@@ -383,7 +388,7 @@ def trend(d: pl.DataFrame, mode):
         rows = [(r["day"], r["drills"], r["minutes"], r["median"], r["best"], r["wrong"] / r["drills"], r["acc"])
                 for r in g.iter_rows(named=True)]
         note = "wrong = words that ended up wrong (worth nothing to wpm) · acc = keys accepted / keys typed"
-    return table(cols, rows) + "\n\n" + note
+    return table(cols, rows), note
 
 
 def gaps_table(gaps: pl.DataFrame, delay):
@@ -391,14 +396,14 @@ def gaps_table(gaps: pl.DataFrame, delay):
     rows = [(label, by[k]["n"] if k in by else None, by[k]["ms"] if k in by else None)
             for label, k in [("into a word's first letter", "start"), ("letter to letter", "letter"), ("into the space", "space")]]
     body = table([("gap", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f")], rows)
-    return body + f"\n\nclean consecutive keys only · tap-hold delay of {delay:.0f} ms taken out (kanata home row and space)"
+    return body, f"clean consecutive keys only · tap-hold delay of {delay:.0f} ms taken out (kanata home row and space)"
 
 
 def pace_table(words: pl.DataFrame, S, L, E):
     """Words by how much slower they are than their length predicts from the exercise's three gaps."""
     clean = words.filter(pl.col("done") & ~pl.col("messy"))
     if clean.is_empty():
-        return "(nothing yet)"
+        return "(nothing yet)", None
     clean = clean.with_columns(
         (pl.col("ms") - (S + (pl.col("letters") - 1) * L + pl.col("has_sep").cast(pl.Int64) * E)).alias("excess"),
         (pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("per_char"),
@@ -408,15 +413,15 @@ def pace_table(words: pl.DataFrame, S, L, E):
          .filter(pl.col("n") >= MIN_WORD).sort("excess", descending=True).head(TOP))
     cols = [("word", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f"), ("excess", ">", "+.0f"), ("ms/char", ">", ".0f")]
     body = table(cols, [(r["word"], r["n"], r["ms"], r["excess"], r["per_char"]) for r in g.iter_rows(named=True)])
-    return body + (f"\n\nclean attempts only, at least {MIN_WORD} · a word is clocked from the previous word's space to its own"
-                   f"\nexcess = median ms over what the three gaps predict for its length ({S:.0f} + letters × {L:.0f} + {E:.0f})")
+    return body, (f"clean attempts only, at least {MIN_WORD} · a word is clocked from the previous word's space to its own"
+                  f" · excess = median ms over what the three gaps predict for its length ({S:.0f} + letters × {L:.0f} + {E:.0f})")
 
 
 def messy_table(words: pl.DataFrame, mode):
     """Words by how often typing them went wrong at all."""
     done = words.filter(pl.col("done"))
     if done.is_empty():
-        return "(nothing yet)"
+        return "(nothing yet)", None
     g = done.group_by("word").agg(pl.len().alias("n"), (pl.col("messy").mean() * 100).alias("messy"),
                                   (pl.col("wrong").mean() * 100).alias("wrong"), pl.col("wrong").sum().alias("fails"))
     if mode == "master":
@@ -431,16 +436,16 @@ def messy_table(words: pl.DataFrame, mode):
         cols = [("word", "<", ""), ("attempts", ">", "d"), ("messy %", ">", ".0f"), ("wrong %", ">", ".0f")]
         rows = [(r["word"], r["n"], r["messy"], r["wrong"]) for r in g.iter_rows(named=True)]
         note = (f"attempts = times typed to the end, at least {MIN_MESSY} · messy = a wrong key or a backspace on the way"
-                "\nwrong = still wrong when the space came (worth nothing to wpm)")
-    return table(cols, rows) + "\n\n" + note
+                " · wrong = still wrong when the space came (worth nothing to wpm)")
+    return table(cols, rows), note
 
 
 def starts_table(starts: pl.DataFrame, S):
     if starts.is_empty():
-        return "(nothing yet)"
+        return "(nothing yet)", None
     cols = [("first letter", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f"), ("vs all", ">", "+.0f")]
     rows = [(r["letter"], r["n"], r["ms"], r["ms"] - S) for r in starts.iter_rows(named=True)]
-    return table(cols, rows) + f"\n\nthe gap from a space into the word's first letter, by that letter · at least {MIN_GRAM[0]} words"
+    return table(cols, rows), f"the gap from a space into the word's first letter, by that letter · at least {MIN_GRAM[0]} words"
 
 
 def grams_boxes(frames):
@@ -449,7 +454,7 @@ def grams_boxes(frames):
     for what, f, m in zip(["key", "bigram", "trigram"], frames, MIN_GRAM):
         cols = [(what, "<", ""), ("n", ">", "d"), ("ms/gap", ">", ".0f")]
         body = table(cols, [(r["gram"], r["n"], r["ms"]) for r in f.iter_rows(named=True)]) if not f.is_empty() else "(nothing yet)"
-        parts.append((f"slow {what}s", body + f"\n\nmedian ms per gap, clocked from the\nkey before to the key after · {m}+ seen"))
+        parts.append((f"slow {what}s", body, f"median ms per gap, clocked from the key before to the key after · {m}+ seen"))
     return parts
 
 
@@ -468,7 +473,7 @@ def long_view(a, con, drills, mode, source):
         head += f" · last {a.days} days"
     if a.tag:
         head += f" · {a.tag}"
-    emit(head, trend(d, mode))
+    emit(head, *trend(d, mode))
 
     sub = dict(drills=drills_sql(a, mode, source), hold=HOLD_KEYS)
     delay = run(con, DELAY, **sub, delay=0.0)["delay_ms"][0] or 0.0
@@ -476,12 +481,12 @@ def long_view(a, con, drills, mode, source):
     gaps = run(con, GAPS, **sub)
     by = {r["kind"]: r["ms"] for r in gaps.iter_rows(named=True)}
     S, L, E = by.get("start", 0.0), by.get("letter", 0.0), by.get("space", 0.0)
-    emit("the three gaps", gaps_table(gaps, delay))
+    emit("the three gaps", *gaps_table(gaps, delay))
 
     words = run(con, WORDS, **sub, bare=BARE.format("wtext"))
-    emit("slow words", pace_table(words, S, L, E))
-    emit("messy words" if mode != "master" else "failed words", messy_table(words, mode))
-    emit("word starts", starts_table(run(con, STARTS, **sub, min=MIN_GRAM[0]), S))
+    emit("slow words", *pace_table(words, S, L, E))
+    emit("messy words" if mode != "master" else "failed words", *messy_table(words, mode))
+    emit("word starts", *starts_table(run(con, STARTS, **sub, min=MIN_GRAM[0]), S))
     print("\n" + boxes(grams_boxes([run(con, NGRAMS, **sub, n=n, min=m, limit=40 if n == 1 else TOP) for n, m in zip((1, 2, 3), MIN_GRAM)])))
 
 
