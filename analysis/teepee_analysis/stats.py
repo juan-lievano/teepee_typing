@@ -276,13 +276,18 @@ def box(title, body, note=None):
     return centred(box_lines(title, body, note))
 
 
-def boxes(parts, gap=2):
-    """Several (title, body) boxes side by side when the terminal is wide enough, else one under another."""
+def flow(parts, gap=2):
+    """Boxes (title, body, note) laid out in rows, as many side by side as the terminal is wide, in order."""
     blocks = [box_lines(*part) for part in parts]
     columns = shutil.get_terminal_size().columns if sys.stdout.isatty() else 10 ** 6
-    if sum(len(b[0]) for b in blocks) + gap * (len(blocks) - 1) <= columns:
-        return centred(beside(["\n".join(b) for b in blocks], " " * gap).split("\n"))
-    return "\n\n".join(centred(b) for b in blocks)
+    rows, row, width = [], [], 0
+    for b in blocks:
+        w = len(b[0])
+        if row and width + gap + w > columns:
+            rows.append(row); row, width = [], 0
+        row.append(b); width += w + (gap if len(row) > 1 else 0)
+    rows.append(row)
+    return "\n\n".join(centred(beside(["\n".join(b) for b in r], " " * gap).split("\n")) for r in rows)
 
 
 def table(cols, rows):
@@ -305,10 +310,6 @@ def beside(blocks, gap="     "):
     for i in range(height):
         out.append(gap.join((s[i] if i < len(s) else "").ljust(w) for s, w in zip(split, widths)).rstrip())
     return "\n".join(out)
-
-
-def emit(title, body, note=None):
-    print("\n" + box(title, body, note))
 
 
 # ------------------------------------------------------------------ quick view
@@ -381,13 +382,13 @@ def trend(d: pl.DataFrame, mode):
                 ("words/drill", ">", ".1f"), ("survival %", ">", ".1f")]
         rows = [(r["day"], r["drills"], r["minutes"], r["median"], r["best"], r["words"] / r["drills"],
                  100 * r["words"] / (r["words"] + r["fails"]) if r["words"] + r["fails"] else None) for r in g.iter_rows(named=True)]
-        note = "survival = words completed / words attempted, the per-word odds a drill goes on"
+        note = "survival = words completed / attempted"
     else:
         cols = [(unit, "<", ""), (what, ">", "d"), ("min", ">", ".0f"), ("median wpm", ">", ".0f"), ("best", ">", ".0f"),
                 (f"wrong/{what[:-1]}", ">", ".1f"), ("acc %", ">", ".1f")]
         rows = [(r["day"], r["drills"], r["minutes"], r["median"], r["best"], r["wrong"] / r["drills"], r["acc"])
                 for r in g.iter_rows(named=True)]
-        note = "wrong = words that ended up wrong (worth nothing to wpm) · acc = keys accepted / keys typed"
+        note = "wrong = words ended wrong · acc = keys accepted / typed"
     return table(cols, rows), note
 
 
@@ -396,7 +397,7 @@ def gaps_table(gaps: pl.DataFrame, delay):
     rows = [(label, by[k]["n"] if k in by else None, by[k]["ms"] if k in by else None)
             for label, k in [("into a word's first letter", "start"), ("letter to letter", "letter"), ("into the space", "space")]]
     body = table([("gap", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f")], rows)
-    return body, f"clean consecutive keys only · tap-hold delay of {delay:.0f} ms taken out (kanata home row and space)"
+    return body, f"clean keys · tap-hold delay {delay:.0f} ms taken out"
 
 
 def pace_table(words: pl.DataFrame, S, L, E):
@@ -413,8 +414,7 @@ def pace_table(words: pl.DataFrame, S, L, E):
          .filter(pl.col("n") >= MIN_WORD).sort("excess", descending=True).head(TOP))
     cols = [("word", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f"), ("excess", ">", "+.0f"), ("ms/char", ">", ".0f")]
     body = table(cols, [(r["word"], r["n"], r["ms"], r["excess"], r["per_char"]) for r in g.iter_rows(named=True)])
-    return body, (f"clean attempts only, at least {MIN_WORD} · a word is clocked from the previous word's space to its own"
-                  f" · excess = median ms over what the three gaps predict for its length ({S:.0f} + letters × {L:.0f} + {E:.0f})")
+    return body, f"clean attempts, {MIN_WORD}+ · excess over {S:.0f} + letters × {L:.0f} + {E:.0f}"
 
 
 def messy_table(words: pl.DataFrame, mode):
@@ -430,13 +430,12 @@ def messy_table(words: pl.DataFrame, mode):
         g = g.filter(pl.col("fails") >= 2).sort(["fails", "wrong"], descending=True).head(TOP)
         cols = [("word", "<", ""), ("reached", ">", "d"), ("failed", ">", "d"), ("failed %", ">", ".0f")]
         rows = [(r["word"], r["n"], r["fails"], r["wrong"]) for r in g.iter_rows(named=True)]
-        note = "failed = the wrong key that ended the drill came on this word, at least twice · practice reps not counted"
+        note = "ended a drill twice or more"
     else:
         g = g.filter(pl.col("n") >= MIN_MESSY).sort(["messy", "n"], descending=True).head(TOP)
         cols = [("word", "<", ""), ("attempts", ">", "d"), ("messy %", ">", ".0f"), ("wrong %", ">", ".0f")]
         rows = [(r["word"], r["n"], r["messy"], r["wrong"]) for r in g.iter_rows(named=True)]
-        note = (f"attempts = times typed to the end, at least {MIN_MESSY} · messy = a wrong key or a backspace on the way"
-                " · wrong = still wrong when the space came (worth nothing to wpm)")
+        note = f"{MIN_MESSY}+ attempts · messy = a wrong key or backspace · wrong = wrong at the space"
     return table(cols, rows), note
 
 
@@ -445,7 +444,7 @@ def starts_table(starts: pl.DataFrame, S):
         return "(nothing yet)", None
     cols = [("first letter", "<", ""), ("n", ">", "d"), ("median ms", ">", ".0f"), ("vs all", ">", "+.0f")]
     rows = [(r["letter"], r["n"], r["ms"], r["ms"] - S) for r in starts.iter_rows(named=True)]
-    return table(cols, rows), f"the gap from a space into the word's first letter, by that letter · at least {MIN_GRAM[0]} words"
+    return table(cols, rows), f"space → first letter, {MIN_GRAM[0]}+ words"
 
 
 def grams_boxes(frames):
@@ -454,7 +453,7 @@ def grams_boxes(frames):
     for what, f, m in zip(["key", "bigram", "trigram"], frames, MIN_GRAM):
         cols = [(what, "<", ""), ("n", ">", "d"), ("ms/gap", ">", ".0f")]
         body = table(cols, [(r["gram"], r["n"], r["ms"]) for r in f.iter_rows(named=True)]) if not f.is_empty() else "(nothing yet)"
-        parts.append((f"slow {what}s", body, f"median ms per gap, clocked from the key before to the key after · {m}+ seen"))
+        parts.append((f"slow {what}s", body, f"median per gap · {m}+ seen"))
     return parts
 
 
@@ -473,7 +472,7 @@ def long_view(a, con, drills, mode, source):
         head += f" · last {a.days} days"
     if a.tag:
         head += f" · {a.tag}"
-    emit(head, *trend(d, mode))
+    parts = [(head, *trend(d, mode))]
 
     sub = dict(drills=drills_sql(a, mode, source), hold=HOLD_KEYS)
     delay = run(con, DELAY, **sub, delay=0.0)["delay_ms"][0] or 0.0
@@ -481,13 +480,14 @@ def long_view(a, con, drills, mode, source):
     gaps = run(con, GAPS, **sub)
     by = {r["kind"]: r["ms"] for r in gaps.iter_rows(named=True)}
     S, L, E = by.get("start", 0.0), by.get("letter", 0.0), by.get("space", 0.0)
-    emit("the three gaps", *gaps_table(gaps, delay))
+    parts.append(("the three gaps", *gaps_table(gaps, delay)))
 
     words = run(con, WORDS, **sub, bare=BARE.format("wtext"))
-    emit("slow words", *pace_table(words, S, L, E))
-    emit("messy words" if mode != "master" else "failed words", *messy_table(words, mode))
-    emit("word starts", *starts_table(run(con, STARTS, **sub, min=MIN_GRAM[0]), S))
-    print("\n" + boxes(grams_boxes([run(con, NGRAMS, **sub, n=n, min=m, limit=40 if n == 1 else TOP) for n, m in zip((1, 2, 3), MIN_GRAM)])))
+    parts.append(("slow words", *pace_table(words, S, L, E)))
+    parts.append(("messy words" if mode != "master" else "failed words", *messy_table(words, mode)))
+    parts.append(("word starts", *starts_table(run(con, STARTS, **sub, min=MIN_GRAM[0]), S)))
+    parts += grams_boxes([run(con, NGRAMS, **sub, n=n, min=m, limit=40 if n == 1 else TOP) for n, m in zip((1, 2, 3), MIN_GRAM)])
+    print("\n" + flow(parts))
 
 
 def exercises(drills: pl.DataFrame):
