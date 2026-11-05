@@ -108,11 +108,16 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 ## Stats
 
 ```sh
-teepee stats                 # one box: the mode you last played (and the book, for literature),
+teepee stats                 # one box: the exercise you last played (a mode on a list or a book),
                              # wpm per drill (40 groups once past 40), oldest left, all time
-teepee stats --full          # the long report: data size, overview, last 10/50/100 master drills,
-                             # sprint bests, missed words, slow words, slow trigrams (last 90 days)
-teepee stats --open          # also the progress graph (wpm per drill, per-word survival over the
+teepee stats sprint          # the long view of one exercise, every table on its drills alone: trend by
+teepee stats master --list english_10k      # day, the three gaps (into a word, letter to letter, into
+teepee stats lit --book quijote             # the space), slow words (clean attempts, excess over what
+                             # the gaps predict for the length), messy words (wrong key or backspace;
+                             # for master, drill-ending fails), word starts by first letter, slow keys /
+                             # bigrams / trigrams (medians, lowercase letters, 30+ occurrences)
+teepee stats --full          # the long view of every exercise played
+teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
 teepee book 2000 --name quijote --lang es --from "En un lugar de la Mancha"
@@ -128,8 +133,10 @@ one verse per line), `iliad` (Samuel Butler's prose translation, 2199),
 `pride` (1342), `quijote` (Spanish original, 2000; accented letters
 and ¿¡ are kept, typed as the dead-key compositions the terminal sends).
 Progress in a book counts from the file's mtime, so re-preparing it starts
-over. Slow-word and slow-trigram tables are per language, through
-`targets.source_ref` → `sources.lang`.
+over. Every table of the long view is on one exercise's drills alone, so a
+word's time is never averaged across modes or lists, and pace tables use the
+median of clean attempts: the mean of all attempts ranks error rate disguised
+as slowness (see `notes.md`).
 
 Timing caveat: kanata's tap-hold keys (the Colemak-DH home row a r s t n e i o
 and the space layer-tap) are reported when the tap is decided, up to a hold
@@ -139,7 +146,7 @@ where the delay cancels exactly, and keys, bigrams and trigrams are clocked
 from the key before them to the key after them, so their own delays cancel
 too; only the two context keys at the window ends get the mean delay taken
 out, estimated from the same keystrokes as half the asymmetry between
-plain→hold and hold→plain gaps (about 65 to 85 ms). Means after that
+plain→hold and hold→plain gaps (about 60 to 80 ms). Medians after that
 correction are sound; single gaps are not.
 
 Both run the Python package in `analysis/`, set up once with:

@@ -87,8 +87,9 @@ enum Cmd {
     },
     /// Print the data directory.
     Data,
-    /// Stats: the mode you last played as a wpm histogram; --full for the long report
-    /// (runs the Python tool in analysis/.venv). Options pass through: --full, --tag X, --days N, --min N, --open.
+    /// Stats: the exercise you last played as a wpm histogram; `stats sprint|master|lit` for the long
+    /// view of one exercise, --full for all (runs the Python tool in analysis/.venv). Arguments pass
+    /// through: --list X, --book X, --full, --tag X, --days N, --open.
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Stats { args: Vec<String> },
     /// Prepare a book: `teepee book 1342 --name pride` (Gutenberg id or a text file).
