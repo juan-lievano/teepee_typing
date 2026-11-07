@@ -233,6 +233,16 @@ PAD = 2     # columns between the box's edge and its contents
 MAX_ROWS = 20
 
 
+def slope(xs, ys):
+    """Least-squares slope of ys over xs, fitted to every point (not the bars); None when the fit is undefined."""
+    n = len(xs)
+    if n < 2:
+        return None
+    mx, my = sum(xs) / n, sum(ys) / n
+    sxx = sum((x - mx) ** 2 for x in xs)
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else None
+
+
 def histogram(vals):
     """Bars of `vals` (None for an empty group) on a wpm axis clipped to the data: floor and ceiling at
     multiples of 10, the row step the smallest of 1/2/5/10 that fits in MAX_ROWS rows, labels every 10."""
@@ -351,6 +361,10 @@ def quick(a, con, drills):
     what = "lines" if mode == "literature" else "drills"
     per_bar = "a bar per drill" if n <= BARS else f"each bar the mean of ~{n / BARS:.0f}"
     title = f"{name} · {n} {what} · median {wpm.median():.0f} wpm · best {wpm.max():.0f} · {per_bar}"
+    judged = d.filter(pl.col("wpm").is_not_null())
+    trend = slope(judged["words"].cum_sum().to_list(), judged["wpm"].to_list())
+    if trend is not None:
+        title += f" · trend {1000 * trend:+.2f} wpm / 1000 words"
     if a.days is not None:
         title += f" · last {a.days} days"
     if a.tag:
