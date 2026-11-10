@@ -4,6 +4,11 @@ Terminal typing trainer that records every keystroke to SQLite. The typing
 app is a Rust binary (`teepee`); the stats are a small Python package over
 the same database file.
 
+`CHEATSHEET.md` lists every command, flag and key in a line each, and is the
+page to keep current: a change to a command updates it in the same commit.
+That matters more than keeping this README current; the README explains how
+things work and can lag, the cheat sheet is what gets read before typing.
+
 ## Use
 
 ```sh
@@ -120,6 +125,8 @@ teepee stats --full          # the long view of every exercise played
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
+teepee journal               # the practice wall: a column per week, a cell per day shaded by the minutes
+                             # typed (first key to last of every drill, practice reps included)
 teepee book 2000 --name quijote --lang es --from "En un lugar de la Mancha"
                              # a Gutenberg text into data/books/<name>.txt (one target per
                              # line: a clause of prose, split at . ! ? , ; : so lines are

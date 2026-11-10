@@ -7,6 +7,7 @@ dependencies = ["duckdb>=1.1", "polars>=1.0", "matplotlib>=3.8"]
 
 [project.scripts]
 teepee-stats = "teepee_analysis.stats:main"
+teepee-journal = "teepee_analysis.journal:main"
 teepee-book = "teepee_analysis.prep_book:main"
 
 [build-system]

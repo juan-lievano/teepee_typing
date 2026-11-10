@@ -369,9 +369,9 @@ def quick(a, con, drills):
     per_bar = "a bar per drill" if n <= BARS else f"each bar the mean of ~{n / BARS:.0f}"
     title = f"{name} · {n} {what} · median {wpm.median():.0f} wpm · best {wpm.max():.0f} · {per_bar}"
     judged = d.filter(pl.col("wpm").is_not_null())
-    trend = slope(judged["words"].cum_sum().to_list(), judged["wpm"].to_list())
+    trend = slope(judged["secs"].cum_sum().to_list(), judged["wpm"].to_list())   # secs: first key to last of each drill
     if trend is not None:
-        title += f" · trend {1000 * trend:+.2f} wpm / 1000 words"
+        title += f" · trend {3600 * trend:+.1f} wpm / hour typing"
     if a.days is not None:
         title += f" · last {a.days} days"
     if a.tag:

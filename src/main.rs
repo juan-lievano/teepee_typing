@@ -92,6 +92,9 @@ enum Cmd {
     /// through: --list X, --book X, --full, --tag X, --days N, --open.
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Stats { args: Vec<String> },
+    /// Journal: the practice wall, a column per week and a cell per day shaded by the minutes typed
+    /// (runs the Python tool in analysis/.venv).
+    Journal,
     /// Prepare a book: `teepee book 1342 --name pride` (Gutenberg id or a text file).
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Book { args: Vec<String> },
@@ -110,6 +113,7 @@ fn main() -> Result<()> {
     match &cmd {
         Cmd::Reset { yes } => return reset(*yes), // before Store::open, which would recreate the file
         Cmd::Stats { args } => return python_tool("teepee-stats", args),
+        Cmd::Journal => return python_tool("teepee-journal", &[]),
         Cmd::Book { args } => return python_tool("teepee-book", args),
         _ => {}
     }
@@ -136,7 +140,7 @@ fn main() -> Result<()> {
             list_books(&store)?;
             Ok(())
         }
-        Cmd::Reset { .. } | Cmd::Stats { .. } | Cmd::Book { .. } => unreachable!("handled above"),
+        Cmd::Reset { .. } | Cmd::Stats { .. } | Cmd::Journal | Cmd::Book { .. } => unreachable!("handled above"),
         Cmd::Tags => {
             println!("{}", describe_tags(&tags));
             Ok(())
