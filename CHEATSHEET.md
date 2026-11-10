@@ -28,7 +28,7 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 |                   | &nbsp;&nbsp;`--open`                        | master progress graph as PNG                    |
 |                   | &nbsp;&nbsp;`--days 7`                      | look back N days                                |
 |                   | &nbsp;&nbsp;`--tag voyager`                 | only that tag                                   |
-|                   | `teepee journal`                            | minutes typed per day, key to key per drill     |
+|                   | `teepee journal`                            | a cell a day, a dot per 2 min typed, key to key |
 |                   | &nbsp;wpm | Monkeytype's, first key to last                 |
 |   | ────────────────────────────────── | ─────────────────────────────────────────────── |
 | **Tags**          | `teepee tags`                               | current tags                                    |

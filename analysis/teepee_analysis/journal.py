@@ -1,9 +1,12 @@
-"""teepee-journal: the practice wall. A column per week, a row per weekday, each cell shaded
-by the minutes typed that day in every mode together, practice reps included. Blank is a day off.
+"""teepee-journal: the practice wall. A column per week, a row per weekday, each cell a block
+of braille dots, one for every MINUTES minutes typed that day in every mode together, practice
+reps included. Blank is a day off.
 
 A drill's minutes run from its first key to its last, whatever its outcome: the wait before
 the first key and the time between drills are not typing.
 """
+import math
+import random
 import shutil
 import sys
 from datetime import date, datetime, timedelta
@@ -11,10 +14,12 @@ from datetime import date, datetime, timedelta
 from .db import connect
 from .stats import PAD, box
 
-SHADES = ((60, "█"), (30, "▓"), (15, "▒"), (0, "░"))   # (at least this many minutes, the cell)
+MINUTES = 2          # a dot; a cell holds 64, so it is full at 128 minutes
+CELL, TALL = 4, 2    # a day's cell: braille characters across, lines down
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-LABEL = 4   # the weekday column, "Mon "
-CELL = 2    # a shade and a gap, so a cell is about square
+LABEL = 5            # the weekday column, "Mon  "
+GAP = 2              # columns between two weeks
+BITS = (0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80)   # the eight dots of a braille character, U+2800 plus their sum
 
 
 def minutes_by_day(con):
@@ -28,28 +33,35 @@ def minutes_by_day(con):
     return out
 
 
-def cell(minutes):
+def cell(minutes, day):
+    """A day's lines, a dot lit for every MINUTES minutes (any typing at all lights one): dealt
+    out to the cell's characters evenly, give or take one, then at random inside each, so the
+    cell reads as one even density. The date fixes the draw: a day looks the same every run."""
     if minutes < 1:
-        return " " * CELL
-    return next(shade for floor, shade in SHADES if minutes >= floor) + " " * (CELL - 1)
+        return [" " * CELL] * TALL
+    n = CELL * TALL
+    lit = min(8 * n, math.ceil(minutes / MINUTES))
+    rng = random.Random(str(day))
+    order = list(range(n))
+    rng.shuffle(order)
+    chars = [0] * n
+    for i, c in enumerate(order):
+        chars[c] = sum(rng.sample(BITS, lit // n + (i < lit % n)))
+    return ["".join(chr(0x2800 + b) for b in chars[r * CELL:(r + 1) * CELL]) for r in range(TALL)]
 
 
 def wall(by_day, weeks):
-    """Month names over the weeks they start in (a name is three characters over
-    two-character weeks, so a first month with one week showing goes unnamed
-    rather than run into the next), then a line per weekday."""
-    months = [" "] * (CELL * len(weeks) + 3)
-    starts = [i for i, w in enumerate(weeks) if i == 0 or w.month != weeks[i - 1].month] + [len(weeks)]
-    end = 0
-    for i, j in zip(starts, starts[1:]):
-        if CELL * i >= end and (i or j - i >= 2):
-            months[CELL * i:CELL * i + 3] = weeks[i].strftime("%b")
-            end = CELL * i + 3
+    """Month names over the weeks they start in, then TALL lines per weekday."""
+    step = CELL + GAP
+    months = [" "] * (step * len(weeks))
+    for i, w in enumerate(weeks):
+        if i == 0 or w.month != weeks[i - 1].month:
+            months[step * i:step * i + 3] = w.strftime("%b")
     lines = [" " * LABEL + "".join(months).rstrip()]
     for d, name in enumerate(DAYS):
-        lines.append(name.ljust(LABEL) + "".join(cell(by_day.get(w + timedelta(d), 0)) for w in weeks).rstrip())
-    legend = "   ".join(f"{shade} {floor}+" if floor else f"{shade} <{SHADES[-2][0]}" for floor, shade in reversed(SHADES))
-    return "\n".join([*lines, "", " " * LABEL + legend + " min"])
+        cells = [cell(by_day.get(w + timedelta(d), 0), w + timedelta(d)) for w in weeks]
+        lines += [((name if r == 0 else "").ljust(LABEL) + (" " * GAP).join(c[r] for c in cells)).rstrip() for r in range(TALL)]
+    return "\n".join([*lines, "", f"a dot is {MINUTES} min, a full cell {8 * CELL * TALL * MINUTES} or more"])
 
 
 def main() -> None:
@@ -60,7 +72,7 @@ def main() -> None:
     first = min(by_day) - timedelta(days=min(by_day).weekday())
     last = date.today() - timedelta(days=date.today().weekday())
     weeks = [first + timedelta(weeks=i) for i in range((last - first).days // 7 + 1)]
-    room = (shutil.get_terminal_size().columns - 2 - 2 * PAD - LABEL) // CELL if sys.stdout.isatty() else len(weeks)
+    room = (shutil.get_terminal_size().columns - 2 - 2 * PAD - LABEL + GAP) // (CELL + GAP) if sys.stdout.isatty() else len(weeks)
     weeks = weeks[-max(1, room):]   # the oldest weeks scroll off the left
     title = f"journal · {sum(by_day.values()):.0f} min since {min(by_day)}"
     print("\n" + box(title, wall(by_day, weeks)) + "\n")

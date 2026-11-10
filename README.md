@@ -133,8 +133,8 @@ teepee stats --full          # the long view of every exercise played
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
-teepee journal               # the practice wall: a column per week, a cell per day shaded by the minutes
-                             # typed (first key to last of every drill, practice reps included)
+teepee journal               # the practice wall: a column per week, a cell per day, a dot in it for every
+                             # 2 minutes typed (first key to last of every drill, practice reps included)
 teepee book 2000 --name quijote --lang es --from "En un lugar de la Mancha"
                              # a Gutenberg text into data/books/<name>.txt (one target per
                              # line: a clause of prose, split at . ! ? , ; : so lines are
