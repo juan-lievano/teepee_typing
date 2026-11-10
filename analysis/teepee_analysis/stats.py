@@ -13,6 +13,7 @@ An exercise is a mode on one source: sprint or master on a word list, literature
 Practice reps belong to the drill that spawned them and are left out of every table.
 """
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -228,7 +229,7 @@ def drills_sql(a, mode, source):
 
 BARS = 40   # most bars; past that many drills, that many groups
 BAR = 2     # columns wide
-FILL = "▓"  # dark shade: a full block is too bright in a light font
+RAMP = " ▁▂▃▄▅▆▇█"  # a cell filled by eighths from the bottom: the top of a bar lands within an eighth of a row
 PAD = 2     # columns between the box's edge and its contents
 MAX_ROWS = 20
 
@@ -244,22 +245,28 @@ def slope(xs, ys):
 
 
 def histogram(vals):
-    """Bars of `vals` (None for an empty group) on a wpm axis clipped to the data: floor and ceiling at
-    multiples of 10, the row step the smallest of 1/2/5/10 that fits in MAX_ROWS rows, labels every 10."""
+    """Bars of `vals` (None for an empty group) on a wpm axis from 10 below the lowest bar to the
+    highest, both rounded out to multiples of 10, the row step the smallest of 1/2/5/10 that fits in MAX_ROWS rows, labels every 10.
+    The top cell of a bar is filled to the nearest eighth of a row."""
     present = [v for v in vals if v is not None]
-    lo = int(min(present) // 10 * 10)
+    lo = max(0, int((min(present) - 10) // 10 * 10))
     hi = int(-(-max(present) // 10) * 10)
     hi = max(hi, lo + 10)
     step = next(s for s in (1, 2, 5, 10, 20, 50) if (hi - lo) / s <= MAX_ROWS)
     lines = []
     y = hi
     while y > lo:
-        cells = [FILL * BAR if v is not None and v >= y - 1e-9 else " " * BAR for v in vals]
+        cells = [RAMP[0 if v is None else round(8 * min(1, max(0, (v - y) / step + 1)))] * BAR for v in vals]
         label = f"{y:>3.0f}" if y % (10 if step >= 5 else 5) == 0 else "   "
         lines.append(label + " │ " + " ".join(cells))
         y -= step
     lines.append(f"{lo:>3.0f} └─" + "─" * ((BAR + 1) * len(vals) - 1) + "  ")   # the slack keeps the right edge off the bars
     return "\n".join(lines)
+
+
+def soft(text):
+    """The bars in the terminal's dim colour, plain when piped: a block at full strength is too bright in a light font."""
+    return re.sub("[▁-█]+", lambda m: f"\x1b[2m{m[0]}\x1b[22m", text) if sys.stdout.isatty() else text
 
 
 def box_lines(title, body, note=None):
@@ -369,7 +376,7 @@ def quick(a, con, drills):
         title += f" · last {a.days} days"
     if a.tag:
         title += f" · {a.tag}"
-    print("\n" + box(title, histogram(means)) + "\n")
+    print("\n" + soft(box(title, histogram(means))) + "\n")
 
 
 # ------------------------------------------------------------------ long view
