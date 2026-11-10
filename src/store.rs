@@ -199,6 +199,17 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// Config of the newest drill of `mode`, whatever its outcome: a drill's row is written when
+    /// its text appears, so this is what the mode was last launched with. None when the mode
+    /// has no drill yet or the config does not parse.
+    pub fn last_config(&self, mode: &str) -> Result<Option<Value>> {
+        let json: Option<String> = self
+            .conn
+            .query_row("SELECT config FROM drills WHERE mode = ?1 ORDER BY id DESC LIMIT 1", params![mode], |r| r.get(0))
+            .optional()?;
+        Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
     pub fn end_drill(&self, drill: i64, outcome: &Outcome, ended_at_ns: i64) -> Result<()> {
         let failed_word = match outcome {
             Outcome::Failed { word, .. } => Some(word.as_str()),

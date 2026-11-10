@@ -12,14 +12,16 @@ things work and can lag, the cheat sheet is what gets read before typing.
 ## Use
 
 ```sh
-teepee                       # master mode: 50 random words from english 10k
+teepee                       # master mode with the settings of the last master drill
+                             # (at first: 50 random words from english 10k)
 teepee master --words 30     # shorter drills
-teepee master --list 1k      # english 200 / 1k / 5k / 10k (default)
-teepee master --keep-case    # keep "February", "I"; default lowercases like Monkeytype
-teepee sprint                # 50 random words from english 200 at normal difficulty: wrong keys
-                             # are let through, nothing is practised; for personal bests
+teepee master --list 1k      # english 200 / 1k / 5k / 10k
+teepee master --keep-case    # keep "February", "I"; --keep-case=false lowercases again, like Monkeytype
+teepee sprint                # random words at normal difficulty: wrong keys are let through, nothing
+                             # is practised; for personal bests (at first: 50 words from english 200)
 teepee sprint --list 1k --words 25
-teepee lit                   # pick a book from the list; or teepee lit quijote / qui / 3
+teepee lit                   # the book last typed (with none yet, pick from the list);
+                             # or teepee lit quijote / qui / 3
                              # (a book, one sentence at a time; wrong words are let through,
                              # practised after the sentence, and the sentence is repeated if
                              # its accuracy was under 95%)
@@ -31,6 +33,12 @@ teepee books                 # books you have prepared
 teepee data                  # where the database lives (data/ in the repo)
 teepee reset                 # delete the database (asks first); books are kept
 ```
+
+A setting left off the command line is the one the mode's last drill had:
+after `teepee sprint --list 1k`, plain `teepee sprint` is on 1k until another
+`--list`. Nothing is stored for this; the last drill's row in the record is
+read (`Store::last_config`), each setting on its own, with the built-in value
+where the record has none.
 
 Tags mark things the data can't know on its own, like which keyboard you
 used. A tag set with `--tag` stays on for every later launch until you set a

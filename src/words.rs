@@ -39,6 +39,11 @@ pub fn full_name(short: &str) -> &'static str {
     LISTS.iter().find(|(s, _, _)| *s == short).map_or("", |(_, name, _)| name)
 }
 
+/// `10k` for `english_10k`: back from a stored name to the one typed on the command line.
+pub fn short_name(full: &str) -> Option<&'static str> {
+    LISTS.iter().find(|(_, name, _)| *name == full).map(|(short, _, _)| *short)
+}
+
 /// `short` is one of LIST_NAMES.
 pub fn list(short: &str, keep_case: bool) -> Option<Arc<WordList>> {
     let (_, name, raw) = LISTS.iter().find(|(s, _, _)| *s == short)?;

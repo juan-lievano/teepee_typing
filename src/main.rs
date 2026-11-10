@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde_json::Value;
 
 use crate::mode::Mode;
 use crate::modes::literature::Literature;
@@ -35,35 +36,37 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Random words from the english 10k list; the first wrong key fails the
-    /// drill and the missed word is practised (~25 keystrokes of it) before a
-    /// fresh drill (default).
+    /// Random words; the first wrong key fails the drill and the missed word
+    /// is practised (~25 keystrokes of it) before a fresh drill (default).
+    /// A setting left unsaid is the last master drill's.
     Master {
-        /// Word list: english 200, 1k, 5k or 10k.
-        #[arg(long, default_value = "10k", value_parser = words::LIST_NAMES.to_vec())]
-        list: String,
-        /// Words per drill.
-        #[arg(long, default_value_t = 50)]
-        words: usize,
-        /// Keep capitals ("February", "I"). Default lowercases everything,
-        /// like Monkeytype with punctuation off.
-        #[arg(long)]
-        keep_case: bool,
+        /// Word list: english 200, 1k, 5k or 10k [default: the last one, 10k at first]
+        #[arg(long, value_parser = words::LIST_NAMES.to_vec())]
+        list: Option<String>,
+        /// Words per drill [default: the last one, 50 at first]
+        #[arg(long, value_parser = positive)]
+        words: Option<usize>,
+        /// Keep capitals ("February", "I"); --keep-case=false lowercases
+        /// everything again, like Monkeytype with punctuation off
+        /// [default: the last one, false at first]
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+        keep_case: Option<bool>,
     },
     /// Random words at normal difficulty: wrong keys are let through and
     /// nothing is practised. For going after a personal best; a fresh drill
-    /// follows each one.
+    /// follows each one. A setting left unsaid is the last sprint drill's.
     Sprint {
-        /// Word list: english 200, 1k, 5k or 10k.
-        #[arg(long, default_value = "200", value_parser = words::LIST_NAMES.to_vec())]
-        list: String,
-        /// Words per drill.
-        #[arg(long, default_value_t = 50)]
-        words: usize,
+        /// Word list: english 200, 1k, 5k or 10k [default: the last one, 200 at first]
+        #[arg(long, value_parser = words::LIST_NAMES.to_vec())]
+        list: Option<String>,
+        /// Words per drill [default: the last one, 50 at first]
+        #[arg(long, value_parser = positive)]
+        words: Option<usize>,
     },
     /// Type a book one line at a time: a clause of prose, a verse of poetry.
     Lit {
-        /// Book name (or a unique prefix of it). Omit it to pick from a list.
+        /// Book name (or a unique prefix of it). Omit it for the book last
+        /// typed; with none yet, pick from a list.
         book: Option<String>,
     },
     /// List available books.
@@ -108,7 +111,7 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: "10k".to_string(), words: 50, keep_case: false });
+    let cmd = cli.cmd.unwrap_or(Cmd::Master { list: None, words: None, keep_case: None });
     let afk = std::time::Duration::from_secs_f64(cli.afk.max(0.5));
     match &cmd {
         Cmd::Reset { yes } => return reset(*yes), // before Store::open, which would recreate the file
@@ -183,17 +186,22 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Master { list, words, keep_case } => {
-            let list = words::list(&list, keep_case).expect("clap validated the list name");
+            let last = store.last_config("master")?;
+            let (list, words) = word_settings(list, words, last.as_ref(), "10k");
+            let keep_case = keep_case.or_else(|| last.as_ref()?.get("keep_case")?.as_bool()).unwrap_or(false);
+            let list = words::list(&list, keep_case).expect("a list name from clap or the record");
             store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
             run(store, tags, afk, vec![Box::new(Master::new(list, words))])
         }
         Cmd::Sprint { list, words } => {
-            let list = words::list(&list, false).expect("clap validated the list name");
+            let (list, words) = word_settings(list, words, store.last_config("sprint")?.as_ref(), "200");
+            let list = words::list(&list, false).expect("a list name from clap or the record");
             store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
             run(store, tags, afk, vec![Box::new(Sprint::new(list, words))])
         }
         Cmd::Lit { book } => {
-            let book = choose_book(&store, book)?;
+            let last = store.last_config("literature")?.and_then(|c| Some(c.get("book")?.as_str()?.to_string()));
+            let book = choose_book(&store, book.or(last.filter(|b| book_names().contains(b))))?;   // none, or since deleted: the picker
             let (lines, mtime_ms) = read_book(&book)?;
             let meta = book_meta(&book);
             store.register_source(&book, "book", meta.lang.as_deref(), meta.title.as_deref(), meta.origin.as_deref())?;
@@ -206,6 +214,28 @@ fn main() -> Result<()> {
             run(store, tags, afk, vec![Box::new(mode)])
         }
     }
+}
+
+/// `--words`: a drill needs at least one.
+fn positive(s: &str) -> Result<usize, String> {
+    match s.parse() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => Err("a whole number, 1 or more".to_string()),
+    }
+}
+
+/// The word list (as typed: `1k`) and length of a word drill. What the command line left
+/// unsaid comes from `last`, the config of the mode's last drill, and from the built-in
+/// value where that has nothing usable: no drill yet, a key the config lacks, a list that no
+/// longer exists. Each setting falls back on its own, and the record is the only memory:
+/// nothing is stored on the side to drift from it.
+fn word_settings(list: Option<String>, words: Option<usize>, last: Option<&Value>, first_list: &str) -> (String, usize) {
+    let stored = |key: &str| last.and_then(|c| c.get(key));
+    let list = list
+        .or_else(|| stored("list")?.as_str().and_then(words::short_name).map(str::to_string))
+        .unwrap_or_else(|| first_list.to_string());
+    let words = words.or_else(|| stored("words")?.as_u64().filter(|n| *n > 0).map(|n| n as usize)).unwrap_or(50);
+    (list, words)
 }
 
 /// Names of the prepared books, sorted.
@@ -449,4 +479,23 @@ fn run(
     let result = kernel.run(first);
     ratatui::restore();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn word_settings_fall_back_one_by_one() {
+        let set = |l: Option<&str>, w, last: Option<Value>| word_settings(l.map(str::to_string), w, last.as_ref(), "200");
+        assert_eq!(set(None, None, None), ("200".to_string(), 50));
+        assert_eq!(set(None, None, Some(json!({"list": "english_1k", "words": 25}))), ("1k".to_string(), 25));
+        assert_eq!(set(Some("5k"), None, Some(json!({"list": "english_1k", "words": 25}))), ("5k".to_string(), 25));
+        assert_eq!(set(None, Some(10), Some(json!({"list": "english_1k", "words": 25}))), ("1k".to_string(), 10));
+        // a list that no longer exists, a length that is no number, a config from another era
+        assert_eq!(set(None, None, Some(json!({"list": "english_3k", "words": "many"}))), ("200".to_string(), 50));
+        assert_eq!(set(None, None, Some(json!({"list": "english_10k", "words": 0}))), ("10k".to_string(), 50));
+        assert_eq!(set(None, None, Some(json!({"book": "pride"}))), ("200".to_string(), 50));
+    }
 }
