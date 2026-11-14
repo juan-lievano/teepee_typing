@@ -79,7 +79,7 @@ keys accepted over keys typed, was below 95% (`MIN_ACCURACY` in
 
 | level   | behaviour |
 |---------|-----------|
-| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint. Backspace at the start of a word goes back into the word before it (in sprint, the previous word target, which is complete again once resubmitted), as typed, to correct it; a word is judged on what it ends up as. Alt/Ctrl+Backspace and Ctrl+W delete the word; at the start of a word, the one before it. The mode gets the missed words and each sentence's accuracy when the drill ends |
+| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint. Backspace at the start of a word goes back into the word before it (in sprint, the previous word target, which is complete again once resubmitted), as typed, to correct it; a word is judged on what it ends up as. Alt/Ctrl+Backspace and Ctrl+W delete the word; at the start of a word, the one before it. `--no-backspace` (any mode, stays until `--no-backspace=false`) makes plain Backspace do nothing, leaving only the word deletes; such drills have `no_backspace` in their config and each dead press is a keystroke of kind `other` named `backspace`. The mode gets the missed words and each sentence's accuracy when the drill ends |
 | master  | the first wrong key fails the drill |
 
 The kernel (`src/runner.rs`) implements both levels once; a mode

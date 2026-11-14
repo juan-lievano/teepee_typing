@@ -46,6 +46,9 @@ pub struct Kernel {
     pub afk: Duration,
     /// Session labels (keyboard, place, ...) stamped on every drill.
     pub tags: Vec<String>,
+    /// Plain Backspace is logged (kind `other`) and does nothing; stamped on
+    /// every drill's config as `no_backspace`.
+    pub no_backspace: bool,
 }
 
 struct Queued {
@@ -85,6 +88,7 @@ struct Drill<'a> {
     /// A block caret is drawn on the next character: on after a deletion,
     /// off again at the next character typed.
     caret: bool,
+    no_backspace: bool,
 }
 
 impl Kernel {
@@ -130,7 +134,11 @@ impl Kernel {
         banner: Option<String>,
     ) -> Result<(i64, Outcome)> {
         let targets = mode.targets();
-        let id = self.store.begin_drill(mode.name(), parent, &mode.config(), &self.tags)?;
+        let mut config = mode.config();
+        if self.no_backspace && let Some(o) = config.as_object_mut() {
+            o.insert("no_backspace".to_string(), true.into());
+        }
+        let id = self.store.begin_drill(mode.name(), parent, &config, &self.tags)?;
         let t0 = Instant::now();
         if targets.is_empty() {
             let outcome = Outcome::Completed { results: Vec::new(), wpm: 0.0 };
@@ -157,6 +165,7 @@ impl Kernel {
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
+            no_backspace: self.no_backspace,
             caret: false,
         };
         let strictness = d.mode.strictness();
@@ -239,6 +248,11 @@ impl Kernel {
                 }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                     self.delete_word(&mut d, t_ns)?;
+                }
+                KeyCode::Backspace if self.no_backspace => {
+                    let pos = d.typed.len();
+                    self.record_named(&d, t_ns, pos, "backspace".to_string(), "other")?;
+                    d.seq += 1;
                 }
                 KeyCode::Backspace => {
                     let start = if strictness == Strictness::Lenient { word_start(&d.typed) } else { 0 };
@@ -580,6 +594,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
             Span::raw(format!(" {}", d.mode.title())).dim(),
             Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) })
                 .fg(theme::MAIN),
+            Span::raw(if d.no_backspace { "  no backspace" } else { "" }).fg(theme::MAIN),
             Span::raw("  esc quits").dim(),
             // A build from uncommitted code stamps its drills `+dirty`: say so
             // on every drill until the binary is rebuilt from a commit.

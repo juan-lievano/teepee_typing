@@ -32,6 +32,10 @@ struct Cli {
     /// Seconds between two keys after which the drill is void (outcome afk).
     #[arg(long, global = true, default_value_t = 3.0)]
     afk: f64,
+    /// Plain Backspace does nothing (to build the Ctrl+W habit); the word
+    /// deletes still work. Stays until `--no-backspace=false`.
+    #[arg(long, global = true, num_args = 0..=1, require_equals = true, default_missing_value = "true")]
+    no_backspace: Option<bool>,
 }
 
 #[derive(Subcommand)]
@@ -134,6 +138,14 @@ fn main() -> Result<()> {
         }
     };
 
+    let no_backspace = match cli.no_backspace {
+        Some(b) => {
+            store.set_setting("no_backspace", if b { "1" } else { "0" })?;
+            b
+        }
+        None => store.setting("no_backspace")?.as_deref() == Some("1"),
+    };
+
     match cmd {
         Cmd::Data => {
             println!("{}", paths::data_dir().display());
@@ -191,13 +203,13 @@ fn main() -> Result<()> {
             let keep_case = keep_case.or_else(|| last.as_ref()?.get("keep_case")?.as_bool()).unwrap_or(false);
             let list = words::list(&list, keep_case).expect("a list name from clap or the record");
             store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
-            run(store, tags, afk, vec![Box::new(Master::new(list, words))])
+            run(store, tags, afk, no_backspace, vec![Box::new(Master::new(list, words))])
         }
         Cmd::Sprint { list, words } => {
             let (list, words) = word_settings(list, words, store.last_config("sprint")?.as_ref(), "200");
             let list = words::list(&list, false).expect("a list name from clap or the record");
             store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
-            run(store, tags, afk, vec![Box::new(Sprint::new(list, words))])
+            run(store, tags, afk, no_backspace, vec![Box::new(Sprint::new(list, words))])
         }
         Cmd::Lit { book } => {
             let last = store.last_config("literature")?.and_then(|c| Some(c.get("book")?.as_str()?.to_string()));
@@ -211,7 +223,7 @@ fn main() -> Result<()> {
                 return Ok(());
             }
             let mode = Literature::new(book, Arc::new(lines), start);
-            run(store, tags, afk, vec![Box::new(mode)])
+            run(store, tags, afk, no_backspace, vec![Box::new(mode)])
         }
     }
 }
@@ -471,11 +483,12 @@ fn run(
     store: Store,
     tags: Vec<String>,
     afk: std::time::Duration,
+    no_backspace: bool,
     first: Vec<Box<dyn Mode>>,
 ) -> Result<()> {
     let terminal = ratatui::init();
     let rx = input::spawn();
-    let mut kernel = Kernel { store, rx, terminal, tags, afk };
+    let mut kernel = Kernel { store, rx, terminal, tags, afk, no_backspace };
     let result = kernel.run(first);
     ratatui::restore();
     result

@@ -14,6 +14,7 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 |                   | `teepee lit`                                | last book; a line repeats under 95%             |
 |                   | `teepee lit pride`                          | name, prefix or number                          |
 |                   | `--tag voyager`                             | any mode: sticky tag; repeatable; `none` clears |
+|                   | `--no-backspace`                            | any mode: sticky; Backspace dead, `Ctrl+W` works; `=false` undoes |
 |                   | `--afk 5`                                   | any mode: pause that voids a drill (3 s)        |
 |                   | `Esc`                                       | quit; saved as aborted once a letter is typed   |
 |                   | `Backspace`                                 | fix; goes back a word (sprint, lit); shows a caret |
