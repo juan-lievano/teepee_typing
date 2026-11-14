@@ -16,8 +16,8 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 |                   | `--tag voyager`                             | any mode: sticky tag; repeatable; `none` clears |
 |                   | `--afk 5`                                   | any mode: pause that voids a drill (3 s)        |
 |                   | `Esc`                                       | quit; saved as aborted once a letter is typed   |
-|                   | `Backspace`                                 | fix; goes back a word (sprint, lit)             |
-|                   | `Alt/Ctrl+Backspace`, `Ctrl+W`              | delete the word (sprint, lit)                   |
+|                   | `Backspace`                                 | fix; goes back a word (sprint, lit); shows a caret |
+|                   | `Alt/Ctrl+Backspace`, `Ctrl+W`              | delete the word, or the one before (sprint, lit) |
 |                   | &nbsp;after a fail | keys ignored until hands are still 0.4 s        |
 |   | ────────────────────────────────── | ─────────────────────────────────────────────── |
 | **Stats**         | `teepee stats`                              | last exercise: wpm bars, median, best, trend    |

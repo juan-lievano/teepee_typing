@@ -60,8 +60,9 @@ the word you were typing cannot fail the practice drill.
 
 The text sits in a padded navy box (colours from the author's terminal
 palette, hardcoded in `src/runner.rs`); the rest of the screen is your
-terminal. There is no caret: typed text is bright, untyped text faint, and
-the first faint letter is the next one to type. The one ambiguous spot, the
+terminal. There is no caret while typing: typed text is bright, untyped text faint, and
+the first faint letter is the next one to type. Deleting brings up a
+block caret there, until the next character typed. The one ambiguous spot, the
 space after a finished word, shows as a faint dot once you have paused on it
 for half a second.
 
@@ -78,7 +79,7 @@ keys accepted over keys typed, was below 95% (`MIN_ACCURACY` in
 
 | level   | behaviour |
 |---------|-----------|
-| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint. Backspace at the start of a word goes back into the word before it (in sprint, the previous word target, which is complete again once resubmitted), as typed, to correct it; a word is judged on what it ends up as. Alt/Ctrl+Backspace and Ctrl+W delete the word. The mode gets the missed words and each sentence's accuracy when the drill ends |
+| lenient | wrong keys show in red; space moves on to the next word, right or wrong, and a missed word stays on screen as typed, in red, with letters never typed left faint. Backspace at the start of a word goes back into the word before it (in sprint, the previous word target, which is complete again once resubmitted), as typed, to correct it; a word is judged on what it ends up as. Alt/Ctrl+Backspace and Ctrl+W delete the word; at the start of a word, the one before it. The mode gets the missed words and each sentence's accuracy when the drill ends |
 | master  | the first wrong key fails the drill |
 
 The kernel (`src/runner.rs`) implements both levels once; a mode
@@ -95,7 +96,7 @@ teepee copies the database as it ended the previous month to
 
 | table        | one row per | notes |
 |--------------|-------------|-------|
-| `drills`     | drill       | mode, parent drill (for spawned practice), wall-clock start, outcome (completed / failed / afk / aborted), failed word, mode config as JSON, tags as JSON array |
+| `drills`     | drill       | `git_commit` the binary was built from (`+dirty` if the code differed from it, and then every drill's header says so; empty for drills before 2026-11-14), mode, parent drill (for spawned practice), wall-clock start, outcome (completed / failed / afk / aborted), failed word, mode config as JSON, tags as JSON array |
 | `sources`    | word list or book | `name` is the part of a `source_ref` before `#`; kind (`wordlist`/`book`), `lang` (`en`, `es`), title, origin. Word lists are seeded; a book is registered by `teepee lit` from its `.json` sidecar |
 | `targets`    | word or sentence reached | `shown_at_ns` and `completed_at_ns` since drill start, `source_ref` like `english_10k#412` or `quijote#1037` (a practice word keeps the ref of the target it was missed in); words after a failure get no row |
 | `keystrokes` | key press   | `t_ns` since drill start, target index, position, expected char, typed char, kind (`char`, `backspace` with typed `word` for a word delete, `ignored`, `modified` for ctrl/alt combos, `other` for enter/tab/arrows), correct (the key was accepted as progress; the key that ends a failed drill is always 0) |

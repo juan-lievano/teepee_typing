@@ -82,6 +82,9 @@ struct Drill<'a> {
     /// While set, keys arriving sooner than SETTLE after the previous one are
     /// ignored; cleared by the first key that arrives after a quiet gap.
     settle_last_input: Option<Instant>,
+    /// A block caret is drawn on the next character: on after a deletion,
+    /// off again at the next character typed.
+    caret: bool,
 }
 
 impl Kernel {
@@ -154,6 +157,7 @@ impl Kernel {
             settle_last_input: banner.is_some().then_some(t0),
             banner,
             tags: self.tags.join(" "),
+            caret: false,
         };
         let strictness = d.mode.strictness();
 
@@ -243,6 +247,7 @@ impl Kernel {
                         let pos = d.typed.len();
                         self.record(&d, t_ns, pos, None, "backspace", None)?;
                         d.seq += 1;
+                        d.caret = true;
                     } else if strictness == Strictness::Lenient && start > 0 {
                         // At the start of a word: reopen the one before it,
                         // as typed, for correction. Its separator goes.
@@ -251,6 +256,7 @@ impl Kernel {
                         self.record(&d, t_ns, pos, None, "backspace", None)?;
                         d.seq += 1;
                         reopen(&mut d, pos);
+                        d.caret = true;
                     } else if strictness == Strictness::Lenient
                         && d.cur > 0
                         && d.targets[d.cur - 1].kind == TargetKind::Word
@@ -266,6 +272,7 @@ impl Kernel {
                         self.record(&d, t_ns, pos, None, "backspace", None)?;
                         d.seq += 1;
                         reopen(&mut d, pos);
+                        d.caret = true;
                     }
                 }
                 // Ctrl/Alt combos are not typing, but they are evidence (a
@@ -282,6 +289,7 @@ impl Kernel {
                 }
                 KeyCode::Char(c) => {
                     d.first_key.get_or_insert(at);
+                    d.caret = false;
                     let pos = d.typed.len();
                     let exp = &d.expected[d.cur];
                     let matched = exp.get(pos) == Some(&c);
@@ -370,8 +378,10 @@ impl Kernel {
 
     /// Drop the trailing spaces and then the word before them from what has
     /// been typed for the current target (at the start of a word that is
-    /// the previous word, which is then open again); nothing happens (and
-    /// nothing is logged) when there is nothing to delete.
+    /// the previous word, which is then open again; under lenient, with
+    /// nothing typed for a word target, it is the previous word target, which
+    /// is emptied and no longer complete); nothing happens (and nothing is
+    /// logged) when there is nothing to delete.
     fn delete_word(&self, d: &mut Drill, t_ns: i64) -> Result<()> {
         let mut n = d.typed.len();
         while n > 0 && d.typed[n - 1] == ' ' {
@@ -381,11 +391,20 @@ impl Kernel {
             n -= 1;
         }
         if n == d.typed.len() {
-            return Ok(());
+            if d.mode.strictness() != Strictness::Lenient
+                || d.cur == 0
+                || d.targets[d.cur - 1].kind != TargetKind::Word
+            {
+                return Ok(());
+            }
+            d.cur -= 1;
+            d.target_scored[d.cur] = 0;
+            self.store.uncomplete_target(d.id, d.cur)?;
         }
         self.record_named(d, t_ns, n, "word".to_string(), "backspace")?;
         d.seq += 1;
         reopen(d, n);
+        d.caret = true;
         Ok(())
     }
 
@@ -562,6 +581,14 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
             Span::raw(if d.tags.is_empty() { "  no tags".to_string() } else { format!("  tags: {}", d.tags) })
                 .fg(theme::MAIN),
             Span::raw("  esc quits").dim(),
+            // A build from uncommitted code stamps its drills `+dirty`: say so
+            // on every drill until the binary is rebuilt from a commit.
+            Span::raw(if crate::store::COMMIT.is_some_and(|c| c.ends_with("+dirty")) {
+                "  uncommitted build: commit, reinstall"
+            } else {
+                ""
+            })
+            .fg(theme::ERROR),
         ]),
         header,
     );
@@ -571,7 +598,7 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
 
     // The text column, and a padded box around it painted in the theme.
     let column = centered(body, COLUMN);
-    let (all, caret_line) = wrap(d, column.width.max(1) as usize);
+    let (all, caret_line, caret_col) = wrap(d, column.width.max(1) as usize);
     // Window of VISIBLE_LINES around the caret: the caret's line is the second
     // one once the text has scrolled, like Monkeytype.
     let first = caret_line.saturating_sub(1).min(all.len().saturating_sub(VISIBLE_LINES));
@@ -597,6 +624,15 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
     f.render_widget(Block::new().style(Style::default().bg(theme::BG)), box_area);
     let text_area = Rect { x: column.x, y: box_area.y + PAD_Y, width: column.width, height: text_h };
     f.render_widget(Paragraph::new(lines), text_area);
+    // The caret is a block painted over the next character's cell, not the
+    // terminal's cursor, which flickers as each frame hides and shows it.
+    let caret_y = text_area.y + (caret_line - first) as u16 * (1 + LINE_GAP);
+    if d.caret
+        && caret_y < text_area.y + text_h
+        && let Some(cell) = f.buffer_mut().cell_mut((text_area.x + caret_col as u16, caret_y))
+    {
+        cell.set_style(Style::default().fg(theme::BG).bg(theme::TEXT));
+    }
 
     let wpm = match d.first_key {
         Some(t) if t.elapsed().as_secs_f64() > 0.5 => {
@@ -708,12 +744,13 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
 }
 
 /// Greedy word wrap of what is on screen (all words, or the current
-/// sentence) into lines of `width`, plus the index of the line holding the
-/// caret. Done by hand so the window and the box can be sized.
-fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize) {
+/// sentence) into lines of `width`, plus the line and column of the caret:
+/// the next expected character, or the end of the current target when what
+/// was typed fills it. Done by hand so the window and the box can be sized.
+fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize, usize) {
     let faded = d.settle_last_input.is_some();
     // Tokens are "word plus trailing space"; a line never breaks inside one.
-    let mut tokens: Vec<Vec<(char, Glyph)>> = Vec::new();
+    let mut tokens: Vec<(usize, Vec<(char, Glyph)>)> = Vec::new();
     let shown: Vec<usize> = match d.targets[d.cur].kind {
         TargetKind::Word => (0..d.targets.len()).collect(),
         TargetKind::Sentence => vec![d.cur],
@@ -724,29 +761,34 @@ fn wrap(d: &Drill, width: usize) -> (Vec<Line<'static>>, usize) {
             let is_space = g.0 == ' ';
             tok.push(g);
             if is_space {
-                tokens.push(std::mem::take(&mut tok));
+                tokens.push((i, std::mem::take(&mut tok)));
             }
         }
         if !tok.is_empty() {
-            tokens.push(tok);
+            tokens.push((i, tok));
         }
     }
 
     let mut lines: Vec<Vec<Span<'static>>> = vec![Vec::new()];
     let mut col = 0usize;
-    let mut caret_line = 0;
-    for tok in tokens {
+    let mut caret = None;
+    let mut cur_end = (0, 0);
+    for (target, tok) in tokens {
         if col > 0 && col + tok.len() > width {
             lines.push(Vec::new());
             col = 0;
         }
         for (c, g) in tok {
             if g == Glyph::Cursor {
-                caret_line = lines.len() - 1;
+                caret = Some((lines.len() - 1, col));
             }
             lines.last_mut().unwrap().push(Span::styled(c.to_string(), style(g, faded)));
             col += 1;
+            if target == d.cur {
+                cur_end = (lines.len() - 1, col);
+            }
         }
     }
-    (lines.into_iter().map(Line::from).collect(), caret_line)
+    let (caret_line, caret_col) = caret.unwrap_or(cur_end);
+    (lines.into_iter().map(Line::from).collect(), caret_line, caret_col)
 }

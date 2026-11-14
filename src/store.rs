@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS drills (
   outcome       TEXT,                      -- completed | failed | aborted
   failed_word   TEXT,                      -- the word that ended a failed drill
   config        TEXT    NOT NULL,          -- JSON, mode-specific
-  tags          TEXT    NOT NULL DEFAULT '[]'  -- JSON array, e.g. ["voyager"]
+  tags          TEXT    NOT NULL DEFAULT '[]', -- JSON array, e.g. ["voyager"]
+  git_commit    TEXT                       -- commit the binary was built from; +dirty if the code differed from it; NULL before this column
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -125,6 +126,13 @@ FROM drills d LEFT JOIN s ON s.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id;
 /// the same number.
 pub const MIN_CHARS: usize = 10;
 
+/// The commit this binary was built from (see `build.rs`), stored on every
+/// drill; None outside a git checkout.
+pub const COMMIT: Option<&str> = match env!("TEEPEE_COMMIT") {
+    c if c.is_empty() => None,
+    c => Some(c),
+};
+
 /// Columns added after the first release; each is applied once.
 fn migrate(conn: &Connection) -> Result<()> {
     let has_failed_word = conn
@@ -138,6 +146,12 @@ fn migrate(conn: &Connection) -> Result<()> {
         .exists([])?;
     if !has_tags {
         conn.execute_batch("ALTER TABLE drills ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';")?;
+    }
+    let has_commit = conn
+        .prepare("SELECT 1 FROM pragma_table_info('drills') WHERE name = 'git_commit'")?
+        .exists([])?;
+    if !has_commit {
+        conn.execute_batch("ALTER TABLE drills ADD COLUMN git_commit TEXT;")?;
     }
     for list in crate::words::LIST_NAMES {
         let name = crate::words::full_name(list);
@@ -192,9 +206,9 @@ impl Store {
     ) -> Result<i64> {
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
         self.conn.execute(
-            "INSERT INTO drills (mode, parent_drill, started_at_ms, config, tags)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![mode, parent, now_ms, config.to_string(), Value::from(tags).to_string()],
+            "INSERT INTO drills (mode, parent_drill, started_at_ms, config, tags, git_commit)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![mode, parent, now_ms, config.to_string(), Value::from(tags).to_string(), COMMIT],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
