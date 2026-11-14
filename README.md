@@ -46,7 +46,7 @@ different one or `--tag none`; the header always shows the current state.
 `retag` rewrites past drills picked by `--last 2h` and/or `--ids 12-30`.
 Stats take `--tag` to filter.
 
-Esc quits. The first wrong key in master mode ends the drill; the missed word
+Esc quits; a drill quit before its first letter is typed is not kept. The first wrong key in master mode ends the drill; the missed word
 is then practised, repeated until about 25 keystrokes of it have been typed
 (an accented letter counts as three: dead key, vowel, and a slow chord)
 but at most 10 times (`PRACTICE_CHARS`, `MAX_REPS` in `src/modes/practice.rs`),

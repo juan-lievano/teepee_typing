@@ -200,7 +200,8 @@ impl Store {
     }
 
     /// Config of the newest drill of `mode`, whatever its outcome: a drill's row is written when
-    /// its text appears, so this is what the mode was last launched with. None when the mode
+    /// its text appears (and dropped only if quit before a letter), so this is what the mode was
+    /// last launched with. None when the mode
     /// has no drill yet or the config does not parse.
     pub fn last_config(&self, mode: &str) -> Result<Option<Value>> {
         let json: Option<String> = self
@@ -219,6 +220,15 @@ impl Store {
             "UPDATE drills SET outcome = ?2, ended_at_ns = ?3, failed_word = ?4 WHERE id = ?1",
             params![drill, outcome.as_str(), ended_at_ns, failed_word],
         )?;
+        Ok(())
+    }
+
+    /// Remove a drill and everything recorded under it.
+    pub fn discard_drill(&self, drill: i64) -> Result<()> {
+        for table in ["keystrokes", "targets"] {
+            self.conn.execute(&format!("DELETE FROM {table} WHERE drill_id = ?1"), params![drill])?;
+        }
+        self.conn.execute("DELETE FROM drills WHERE id = ?1", params![drill])?;
         Ok(())
     }
 

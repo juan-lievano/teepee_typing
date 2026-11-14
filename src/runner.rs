@@ -452,6 +452,11 @@ impl Kernel {
     }
 
     fn finish(&self, d: &Drill, t_ns: i64, outcome: Outcome) -> Result<(i64, Outcome)> {
+        // Quit before typing a letter: nothing was drilled, so nothing is kept.
+        if matches!(outcome, Outcome::Aborted) && d.first_key.is_none() {
+            self.store.discard_drill(d.id)?;
+            return Ok((d.id, outcome));
+        }
         self.store.end_drill(d.id, &outcome, t_ns)?;
         Ok((d.id, outcome))
     }
