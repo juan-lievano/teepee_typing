@@ -22,10 +22,10 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 |                   | &nbsp;after a fail | keys ignored until hands are still 0.4 s        |
 |   | ────────────────────────────────── | ─────────────────────────────────────────────── |
 | **Stats**         | `teepee stats`                              | last exercise: wpm bars, median, best, trend    |
-|                   | `teepee stats sprint\|master\|lit`          | long view of that exercise                      |
+|                   | `teepee stats sprint\|master\|lit`          | that exercise in depth                          |
 |                   | &nbsp;&nbsp;`--list english_1k`             | which list (last played)                        |
 |                   | &nbsp;&nbsp;`--book quijote`                | which book (last played)                        |
-|                   | &nbsp;&nbsp;`--full`                        | long view of every exercise                     |
+|                   | &nbsp;&nbsp;`--full`                        | the whole record, exercises compared            |
 |                   | &nbsp;&nbsp;`--open`                        | master progress graph as PNG                    |
 |                   | &nbsp;&nbsp;`--days 7`                      | look back N days                                |
 |                   | &nbsp;&nbsp;`--tag voyager`                 | only that tag                                   |

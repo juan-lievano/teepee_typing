@@ -124,13 +124,17 @@ Timestamps are taken on a dedicated input thread the moment a key is read.
 ```sh
 teepee stats                 # one box: the exercise you last played (a mode on a list or a book),
                              # wpm per drill (40 groups once past 40), oldest left, all time
-teepee stats sprint          # the long view of one exercise, every table on its drills alone: trend by
-teepee stats master --list english_10k      # day, the three gaps (into a word, letter to letter, into
-teepee stats lit --book quijote             # the space), slow words (clean attempts, excess over what
+teepee stats sprint          # one exercise, every box on its drills alone: the wpm bars, then by day,
+teepee stats master --list english_10k      # the three gaps (into a word, letter to letter, into
+teepee stats lit --book quijote             # the space), slow words (clean attempts, ms over what
                              # the gaps predict for the length), messy words (wrong key or backspace;
-                             # for master, drill-ending fails), word starts by first letter, slow keys /
-                             # bigrams / trigrams (medians, lowercase letters, 30+ occurrences)
-teepee stats --full          # the long view of every exercise played
+                             # for master, drill-ending fails), the slowest and fastest bigrams and
+                             # the gap into each letter, both only between keys off the home row: a
+                             # home-row mod is reported when its tap is decided, not when it is pressed
+teepee stats --full          # the whole record: a row per exercise (drills, minutes, wpm, the three
+                             # gaps, wpm over time), then pooled over every exercise: slow and messy
+                             # words (in 2+ exercises), bigrams, letters; the same words in two
+                             # exercises; pace by hour and by time into a session; records
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
