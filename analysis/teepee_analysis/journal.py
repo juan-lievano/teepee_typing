@@ -61,7 +61,7 @@ def wall(by_day, weeks):
     for d, name in enumerate(DAYS):
         cells = [cell(by_day.get(w + timedelta(d), 0), w + timedelta(d)) for w in weeks]
         lines += [((name if r == 0 else "").ljust(LABEL) + (" " * GAP).join(c[r] for c in cells)).rstrip() for r in range(TALL)]
-    return "\n".join([*lines, "", f"a dot is {MINUTES} min, a full cell {8 * CELL * TALL * MINUTES} or more"])
+    return "\n".join([*lines, "", f"a dot is {MINUTES} min"])
 
 
 def main() -> None:

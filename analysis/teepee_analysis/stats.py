@@ -567,10 +567,7 @@ def bigram_box(gaps: pl.DataFrame):
         return table([(head, "<", ""), ("", "<", ""), ("ms", ">", ".0f"), ("n", ">", "d")],
                      [(r["gram"], hbar(r["ms"] / top, 8), r["ms"], r["n"]) for r in f.iter_rows(named=True)])
     body = beside([side(grams.head(k), "slowest"), side(grams.tail(k).reverse(), "fastest")], "    ")
-    return ("bigrams · off the home row", body, f"only pairs of keys off the home row: those arrive the instant they are pressed, "
-            f"so the gap between two of them is real · {' '.join(sorted(MODS.replace(' ', '')))} also hold a modifier, and arrive only "
-            f"once the tap is decided (at release), so a pair with one of them cannot be timed · ms from the first key to the second, "
-            f"typed clean, {MIN_GRAM[1]}+ times")
+    return ("bigrams · off the home row", body, f"ms between two keys, typed clean {MIN_GRAM[1]}+ times · home-row keys report late, so pairs with one are left out")
 
 
 def letters_box(gaps: pl.DataFrame):
@@ -592,8 +589,7 @@ def letters_box(gaps: pl.DataFrame):
     lines.append(f"{lo:>4.0f} └─" + "─" * ((BAR + 1) * len(labels) - 1))
     lines.append("       " + " ".join(f"{l:<{BAR}}" for l in labels))
     return ("letters off the home row · ms into each, slowest left", "\n".join(lines),
-            f"the gap from the letter before, when that is off the home row too · home-row letters are left out: they arrive "
-            f"late (see bigrams) · medians, typed clean, {MIN_GRAM[0]}+ times")
+            f"median ms from the letter before, also off the home row · typed clean {MIN_GRAM[0]}+ times")
 
 
 def gaps_of(con, ids):
@@ -668,7 +664,7 @@ def long_view(a, con, drills, mode, source):
     parts = [
         by_day(d, mode),
         gaps_box(gaps, delay),
-        ("slow words", slow_words(words), f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes you"),
+        ("slow words", slow_words(words), f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes"),
         ("failed words", failed_words(words), "ended a drill twice or more · of = times reached") if mode == "master" else
         ("messy words", messy_words(words), f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
         bigram_box(gaps_in),
@@ -713,8 +709,7 @@ def exercise_table(per, practice):
                      e["gaps"]["start"], e["gaps"]["letter"], e["gaps"]["space"]))
     if practice.height:
         rows.append(("practice reps", practice.height, practice["secs"].fill_null(0).sum() / 60, *[None] * 8))
-    note = ("wpm = the median drill · last 20 = the median of the latest 20 · wrong = words ended wrong per drill · "
-            "start, letter, space = median ms into a word's first letter, from letter to letter, into the space")
+    note = "wpm = median · wrong = words ended wrong per drill · start, letter, space = median ms into each"
     return table(cols, rows), note
 
 
@@ -739,7 +734,7 @@ def same_words(words: pl.DataFrame, order):
                   ("", "<", ""), ("slower", ">", "+.0f"), ("words", ">", "d")],
                  [(f, a, s, b, hbar(p / top, 8), p, n) for n, f, a, s, b, p in rows])
     return ("the same words in two exercises", body,
-            f"words typed clean in both, {MIN_SHARED}+ such words · the median word's ms per key · slower in %")
+            f"median ms per key of the words typed clean in both ({MIN_SHARED}+)")
 
 
 def rhythm(drills: pl.DataFrame):
@@ -767,9 +762,9 @@ def rhythm(drills: pl.DataFrame):
         most = max((abs(r[2]) for r in rows), default=0)
         return table([(head, "<", ""), ("drills", ">", "d"), ("", "<", ""), ("%", ">", "+.1f")],
                      [(k, n, sided(v, most), v) for k, n, v in rows])
-    how = "a drill's wpm against the median of its exercise that day (5+ drills)"
-    return [("pace by hour", side("hour", "hour", range(0, 24, 3), lambda h: f"{h:02d} – {h + 3:02d}"), f"{how} · {MIN_SLOT}+ drills a row"),
-            ("pace into a session", side("stretch", "minutes in", names, str), f"{how} · minutes from the session's first key to the drill's first key · {SESSION_GAP_MIN} min without a key ends a session")]
+    how = "wpm against that day's median for the exercise"
+    return [("pace by hour", side("hour", "hour", range(0, 24, 3), lambda h: f"{h:02d} – {h + 3:02d}"), how),
+            ("pace into a session", side("stretch", "minutes in", names, str), f"{how} · {SESSION_GAP_MIN} min idle ends a session")]
 
 
 def keyboards_box(judged: pl.DataFrame, gaps_in: pl.DataFrame):
@@ -796,8 +791,7 @@ def keyboards_box(judged: pl.DataFrame, gaps_in: pl.DataFrame):
     pair = lambda u, v, f: f"{u:{f}} / {v:{f}}" if u is not None and v is not None else None
     body = table(cols, [(n, pair(nx, ny, "d"), pair(wx, wy, ".0f"), sided(diff, most), diff, pair(ax, ay, ".1f"), pair(mx, my, ".0f"))
                         for n, nx, ny, wx, wy, diff, ax, ay, mx, my in rows])
-    return (f"{a} / {b}", body, f"each pair {a} first · the bar: {b}'s median wpm over {a}'s · off-home ms = the median gap between two keys "
-            f"off the home row, the one timing both keyboards report alike · {MIN_KEYBOARD}+ drills on each")
+    return (f"{a} / {b}", body, f"each pair {a} first · bar = {b}'s wpm over {a}'s · off-home ms = median gap between two keys off the home row")
 
 
 MISSES = """
@@ -850,9 +844,7 @@ def misses_box(con, ids):
         cells = [scatter(wrong[e].get(t, 0), most, f"{e}/{t}") for t in cols] + [scatter(min(other, most), most, f"{e}/other")]
         lines.append(f"{show(e)}  │ " + "  ".join(cells) + f"   {total[e]:>6}  {100 * total[e] / pressed[e]:>9.1f}%")
     return ("the key hit instead · rows wanted, columns typed", "\n".join(lines),
-            f"the {len(keys)} keys missed most often for their presses ({MISS_MIN}+ misses) · a row's full cell is the key it was "
-            f"hit as most, the others in proportion · a column for each key that took {MISS_SHARE:.0%}+ of some row's misses · "
-            "a letter left out reads as the next one typed early")
+            f"the {len(keys)} keys missed most often ({MISS_MIN}+ misses) · a row's full cell is its commonest miss")
 
 
 JOURNAL_WEEKS = 12     # weeks of the practice wall in the full view; `teepee journal` shows as many as fit
@@ -923,11 +915,7 @@ def list_words(words: pl.DataFrame, name):
     if slow_words(words) == messy_words(words):     # neither has a word yet
         return None
     return (f"{name} · slow and messy words", lambda n: beside([slow_words(words, n), messy_words(words, n)], "    "),
-            f"this list alone · slow: typed clean {MIN_WORD}+ times, ms over its usual for the length · "
-            f"messy: {MIN_MESSY}+ attempts, % with a wrong key or backspace")
-
-
-CLEAN_TIMES = 50   # clean typings that make a word, trigram or bigram count as drilled
+            f"slow: clean {MIN_WORD}+ times, ms over the usual for its length · messy: {MIN_MESSY}+ attempts, % not clean")
 
 
 def list_words_of(name):
@@ -941,40 +929,33 @@ def grams(word, k):
 
 
 def coverage_box(words: pl.DataFrame, lists):
-    """For each list, the share of its distinct words, trigrams and bigrams typed at all, and typed clean often."""
+    """For each list: how many times over all of it has been typed, and how far the next time through has got,
+    in its distinct words, trigrams and bigrams."""
     done = words.filter(pl.col("done")).with_columns(pl.col("word").str.to_lowercase())
     met = dict(done.group_by("word").agg(pl.len()).iter_rows())
-    clean = dict(done.filter(~pl.col("messy")).group_by("word").agg(pl.len()).iter_rows())
-    def counts(seen, k):       # how many times each k-gram was typed, inside the words in `seen`
-        out = Counter()
-        for w, n in seen.items():
-            for g in ([w] if k == 0 else grams(w, k)):
-                out[g] += n
-        return out
-    levels = [("typed at least once", {k: counts(met, k) for k in (0, 3, 2)}, 1),
-              (f"typed clean {CLEAN_TIMES}+ times", {k: counts(clean, k) for k in (0, 3, 2)}, CLEAN_TIMES)]
-    lists = sorted(lists, key=lambda name: len(list_words_of(name) or []))     # shortest list first
-    blocks = []
-    for head, seen, least in levels:
-        rows = []
-        for name in lists:
-            if (ws := list_words_of(name)) is None:
-                continue
-            row = [name]
-            for k in (0, 3, 2):
-                have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
-                share = sum(seen[k][g] >= least for g in have) / len(have)
-                row += [len(have), hbar(share, 8), share * 100]
-            rows.append(tuple(row))
-        if not rows:
-            return None
-        cols = [(head.ljust(max(len(l[0]) for l in levels)), "<", "")]
-        for what in ("words", "trigrams", "bigrams"):
-            cols += [(what, ">", "d"), ("", "<", ""), ("%", ">", ".0f")]
-        blocks.append(table(cols, rows))
-    return ("lists covered", "\n\n".join(blocks),
-            "of the distinct words in each list, and of the distinct runs of 3 and of 2 letters inside them, the % typed to the end "
-            "in any sprint or master drill, whichever list it came from · clean = no wrong key and no backspace")
+    seen = {0: Counter(met), 3: Counter(), 2: Counter()}     # times each word, trigram, bigram was typed
+    for w, n in met.items():
+        for k in (3, 2):
+            for g in grams(w, k):
+                seen[k][g] += n
+    rows = []
+    for name in sorted(lists, key=lambda name: len(list_words_of(name) or [])):     # shortest list first
+        if (ws := list_words_of(name)) is None:
+            continue
+        over = min(seen[0][w] for w in ws)        # every word has been typed this many times
+        row = [name, f"{over}×"]
+        for k in (0, 3, 2):
+            have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
+            share = sum(seen[k][g] > over for g in have) / len(have)
+            row += [len(have), hbar(share, 8), int(share * 100)]      # rounded down: 100 only when none is missing
+        rows.append(tuple(row))
+    if not rows:
+        return None
+    cols = [("list", "<", ""), ("all typed", ">", "")]
+    for what in ("words", "trigrams", "bigrams"):
+        cols += [(what, ">", "d"), ("", "<", ""), ("%", ">", "d")]
+    return ("lists covered", table(cols, rows),
+            "all typed = times every word has been typed · % = how much has been typed once more")
 
 
 def full_view(a, con, drills):
