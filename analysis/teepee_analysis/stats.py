@@ -15,11 +15,13 @@ An exercise is a mode on one source: sprint or master on a word list, literature
 Practice reps belong to the drill that spawned them and are left out of every table.
 """
 import argparse
+import json
 import re
 import shutil
 import subprocess
 import sys
 import textwrap
+from collections import Counter
 from pathlib import Path
 
 import polars as pl
@@ -60,7 +62,8 @@ k AS (
   SELECT drill_id,
          count(*) FILTER (WHERE kind = 'char')                                        AS chars_typed,
          coalesce(sum(correct) FILTER (WHERE kind = 'char'), 0)                       AS chars_correct,
-         max(t_ns) FILTER (WHERE kind = 'char') - min(t_ns) FILTER (WHERE kind = 'char') AS span_ns
+         max(t_ns) FILTER (WHERE kind = 'char') - min(t_ns) FILTER (WHERE kind = 'char') AS span_ns,
+         min(t_ns) AS first_ns, max(t_ns) AS last_ns
   FROM kk GROUP BY drill_id
 ),
 c AS (
@@ -75,7 +78,9 @@ w AS (
 SELECT d.id, d.mode, d.outcome, d.started_at_ms, d.failed_word, d.tags,
        json_extract_string(d.config, '$.book') AS book,
        coalesce(json_extract_string(d.config, '$.book'), json_extract_string(d.config, '$.list')) AS source,
-       strftime(to_timestamp(d.started_at_ms / 1000), '%Y-%m-%d') AS day,
+       -- started_at_ms is when the drill opened; it may then sit idle, so clock times are taken from its keys
+       d.started_at_ms + k.first_ns / 1000000 AS first_key_ms, d.started_at_ms + k.last_ns / 1000000 AS last_key_ms,
+       strftime(to_timestamp((d.started_at_ms + coalesce(k.first_ns, 0) / 1000000) / 1000), '%Y-%m-%d') AS day,
        coalesce(w.words, 0) AS words, coalesce(k.chars_typed, 0) AS chars_typed, coalesce(k.chars_correct, 0) AS chars_correct,
        coalesce(c.chars_scored, 0) AS chars_scored, coalesce(c.words_wrong, 0) AS words_wrong,
        CASE WHEN k.chars_typed >= $min_chars THEN c.chars_scored / 5.0 / nullif(k.span_ns, 0) * 60e9 END AS wpm,
@@ -329,15 +334,21 @@ def box(title, body, note=None):
     return centred(box_lines(title, body, note))
 
 
+def drawn(part, n=None):
+    """The part with its body drawn: a body may be a function of the rows it may rank, so it can fill its box."""
+    title, body, *note = part
+    return (title, body(n or TOP) if callable(body) else body, *note)
+
+
 def grid(lead, parts, gap=1):
     """Boxes (title, body, note) as one block: each of `lead` on a row of its own, then `parts` in order,
     packed into as few rows as the terminal's width allows. Every row is stretched to the widest row and every box
-    in a row to the tallest, so the edges line up."""
+    in a row to the tallest, so the edges line up. A ranking whose body is a function grows into the lines its row leaves it."""
     # Widest first, each box into the first row with room, gives the number of rows; of every way
     # to fill that many or one more, the one with the fewest rows under two thirds full, then the fewest lines (tall boxes
     # share a row), then the fullest emptiest row.
     # A row then keeps the order the boxes were given in, and the rows the order of their first boxes.
-    firsts_ = [box_lines(*p) for p in parts]
+    firsts_ = [box_lines(*drawn(p)) for p in parts]
     natural = [len(b[0]) for b in firsts_]
     room = columns()
     def used(r):
@@ -368,17 +379,24 @@ def grid(lead, parts, gap=1):
                 r.append(i); place(i + 1, rows); r.pop()
         if len(rows) <= len(packed):
             rows.append([i]); place(i + 1, rows); rows.pop()
-    if len(parts) <= 13:
+    if len(parts) <= 16:
         place(0, [])
     packed = best[1]
     spec = [[p] for p in lead] + [[parts[i] for i in sorted(r)] for r in sorted(packed, key=min)]
-    rows = [[box_lines(*p) for p in ps] for ps in spec]
+    rows = [[box_lines(*drawn(p)) for p in ps] for ps in spec]
     total = max(sum(len(b[0]) for b in r) + gap * (len(r) - 1) for r in rows)
     out = []
     for r, ps in zip(rows, spec):
         spare = total - sum(len(b[0]) for b in r) - gap * (len(r) - 1)
         widths = [len(b[0]) + spare // len(r) + (k < spare % len(r)) for k, b in enumerate(r)]
         height = max(len(b) for b in r)
+        def fill(p, w, b):   # the most rows that keep the box inside the row's height and its own width
+            for n in range(TOP + height - len(b), TOP, -1) if callable(p[1]) else ():
+                more = box_lines(*drawn(p, n), width=w)
+                if len(more) <= height and len(more[0]) == w:
+                    return drawn(p, n)
+            return drawn(p)
+        ps = [fill(p, w, b) for p, w, b in zip(ps, widths, r)]
         boxes = [box_lines(*p, width=w, height=height) for p, w in zip(ps, widths)]
         height = max(len(b) for b in boxes)      # a wider box may wrap its note onto fewer lines
         boxes = [b[:-1] + ["│" + " " * (len(b[0]) - 2) + "│"] * (height - len(b)) + b[-1:] for b in boxes]
@@ -494,12 +512,12 @@ def with_excess(words: pl.DataFrame):
         (pl.col("ms") - (pl.col("S") + (pl.col("letters") - 1) * pl.col("L") + sep * pl.col("E"))).alias("excess"))
 
 
-def slow_words(words: pl.DataFrame, min_ex=1):
+def slow_words(words: pl.DataFrame, top=TOP):
     """Words by how much slower they are, typed clean, than their length predicts."""
     g = (with_excess(words).group_by("word")
-         .agg(pl.len().alias("n"), pl.col("excess").median().alias("excess"), pl.col("ex").n_unique().alias("nex"))
-         .filter((pl.col("n") >= MIN_WORD) & (pl.col("nex") >= min_ex) & (pl.col("excess") > 0))
-         .sort("excess", descending=True).head(TOP))
+         .agg(pl.len().alias("n"), pl.col("excess").median().alias("excess"))
+         .filter((pl.col("n") >= MIN_WORD) & (pl.col("excess") > 0))
+         .sort("excess", descending=True).head(top))
     if g.is_empty():
         return "(nothing yet)"
     top = g["excess"].max()
@@ -507,12 +525,12 @@ def slow_words(words: pl.DataFrame, min_ex=1):
                  [(r["word"], hbar(r["excess"] / top), r["excess"], r["n"]) for r in g.iter_rows(named=True)])
 
 
-def messy_words(words: pl.DataFrame, min_ex=1):
+def messy_words(words: pl.DataFrame, top=TOP):
     """Words by how often typing them went wrong at all."""
     g = (words.filter(pl.col("done")).group_by("word")
-         .agg(pl.len().alias("n"), (pl.col("messy").mean() * 100).alias("messy"), pl.col("ex").n_unique().alias("nex"))
-         .filter((pl.col("n") >= MIN_MESSY) & (pl.col("nex") >= min_ex) & (pl.col("messy") > 0))
-         .sort(["messy", "n"], descending=True).head(TOP))
+         .agg(pl.len().alias("n"), (pl.col("messy").mean() * 100).alias("messy"))
+         .filter((pl.col("n") >= MIN_MESSY) & (pl.col("messy") > 0))
+         .sort(["messy", "n"], descending=True).head(top))
     if g.is_empty():
         return "(nothing yet)"
     return table([("word", "<", ""), ("", "<", ""), ("messy %", ">", ".0f"), ("n", ">", "d")],
@@ -549,8 +567,10 @@ def bigram_box(gaps: pl.DataFrame):
         return table([(head, "<", ""), ("", "<", ""), ("ms", ">", ".0f"), ("n", ">", "d")],
                      [(r["gram"], hbar(r["ms"] / top, 8), r["ms"], r["n"]) for r in f.iter_rows(named=True)])
     body = beside([side(grams.head(k), "slowest"), side(grams.tail(k).reverse(), "fastest")], "    ")
-    return ("bigrams · off the home row", body, f"ms from the first key to the second, typed clean, {MIN_GRAM[1]}+ times · "
-            f"none with {' '.join(sorted(MODS.replace(' ', '')))}: a home-row mod is reported late, so its gaps cannot be timed")
+    return ("bigrams · off the home row", body, f"only pairs of keys off the home row: those arrive the instant they are pressed, "
+            f"so the gap between two of them is real · {' '.join(sorted(MODS.replace(' ', '')))} also hold a modifier, and arrive only "
+            f"once the tap is decided (at release), so a pair with one of them cannot be timed · ms from the first key to the second, "
+            f"typed clean, {MIN_GRAM[1]}+ times")
 
 
 def letters_box(gaps: pl.DataFrame):
@@ -572,7 +592,8 @@ def letters_box(gaps: pl.DataFrame):
     lines.append(f"{lo:>4.0f} └─" + "─" * ((BAR + 1) * len(labels) - 1))
     lines.append("       " + " ".join(f"{l:<{BAR}}" for l in labels))
     return ("letters off the home row · ms into each, slowest left", "\n".join(lines),
-            f"from the letter before, when that is off the home row too · medians, typed clean, {MIN_GRAM[0]}+ times")
+            f"the gap from the letter before, when that is off the home row too · home-row letters are left out: they arrive "
+            f"late (see bigrams) · medians, typed clean, {MIN_GRAM[0]}+ times")
 
 
 def gaps_of(con, ids):
@@ -647,7 +668,7 @@ def long_view(a, con, drills, mode, source):
     parts = [
         by_day(d, mode),
         gaps_box(gaps, delay),
-        ("slow words", slow_words(words), f"typed clean {MIN_WORD}+ times · ms over what the gaps predict for the length"),
+        ("slow words", slow_words(words), f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes you"),
         ("failed words", failed_words(words), "ended a drill twice or more · of = times reached") if mode == "master" else
         ("messy words", messy_words(words), f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
         bigram_box(gaps_in),
@@ -663,7 +684,7 @@ def long_view(a, con, drills, mode, source):
 # is taken against the gaps of the exercise each attempt was typed in, so a
 # slow exercise does not make its words slow.
 
-SESSION_GAP_MIN = 20     # a drill starting this long after the one before starts a new session
+SESSION_GAP_MIN = 20     # this long between one drill's last key and the next one's first starts a new session
 MIN_SHARED = 30          # words two exercises must share to be compared
 KEYBOARDS = ("macbook", "voyager")   # the two tags compared; a drill carries the one it was typed on
 MIN_KEYBOARD = 5         # drills an exercise needs on each keyboard to be compared
@@ -722,12 +743,13 @@ def same_words(words: pl.DataFrame, order):
 
 
 def rhythm(drills: pl.DataFrame):
-    """Two boxes: each judged drill's wpm against the median of its exercise that day, by hour of the day and by time into a session."""
+    """Two boxes: each judged drill's wpm against the median of its exercise that day, by hour of the day and by time into a session. Clock times are of keys, never of a drill opening."""
     from datetime import datetime
-    d = drills.sort("started_at_ms").with_columns(
-        (pl.col("started_at_ms").diff().fill_null(0) > SESSION_GAP_MIN * 60_000).cum_sum().alias("session"),
-        pl.col("started_at_ms").map_elements(lambda ms: datetime.fromtimestamp(ms / 1000).hour, return_dtype=pl.Int64).alias("hour"))
-    d = d.with_columns(((pl.col("started_at_ms") - pl.col("started_at_ms").min().over("session")) / 60_000).alias("into"))
+    d = drills.filter(pl.col("first_key_ms").is_not_null()).sort("first_key_ms")
+    d = d.with_columns(
+        ((pl.col("first_key_ms") - pl.col("last_key_ms").shift(1)).fill_null(0) > SESSION_GAP_MIN * 60_000).cum_sum().alias("session"),
+        pl.col("first_key_ms").map_elements(lambda ms: datetime.fromtimestamp(ms / 1000).hour, return_dtype=pl.Int64).alias("hour"))
+    d = d.with_columns(((pl.col("first_key_ms") - pl.col("first_key_ms").min().over("session")) / 60_000).alias("into"))
     j = d.filter(pl.col("outcome").is_in(["failed", "completed"]) & (pl.col("mode") != "practice") & pl.col("wpm").is_not_null())
     j = j.with_columns(pl.col("wpm").median().over(["mode", "source", "day"]).alias("usual"),
                        pl.len().over(["mode", "source", "day"]).alias("that_day"))
@@ -747,7 +769,7 @@ def rhythm(drills: pl.DataFrame):
                      [(k, n, sided(v, most), v) for k, n, v in rows])
     how = "a drill's wpm against the median of its exercise that day (5+ drills)"
     return [("pace by hour", side("hour", "hour", range(0, 24, 3), lambda h: f"{h:02d} – {h + 3:02d}"), f"{how} · {MIN_SLOT}+ drills a row"),
-            ("pace into a session", side("stretch", "minutes in", names, str), f"{how} · a session ends at a {SESSION_GAP_MIN} min pause")]
+            ("pace into a session", side("stretch", "minutes in", names, str), f"{how} · minutes from the session's first key to the drill's first key · {SESSION_GAP_MIN} min without a key ends a session")]
 
 
 def keyboards_box(judged: pl.DataFrame, gaps_in: pl.DataFrame):
@@ -896,7 +918,68 @@ def records(con, drills, words, ids):
     return ("records", table([("", "<", ""), ("", ">", ""), ("", "<", "")], rows).split("\n", 1)[1], None)
 
 
+def list_words(words: pl.DataFrame, name):
+    """One sprint list: its slowest words beside the ones mistyped most."""
+    if slow_words(words) == messy_words(words):     # neither has a word yet
+        return None
+    return (f"{name} · slow and messy words", lambda n: beside([slow_words(words, n), messy_words(words, n)], "    "),
+            f"this list alone · slow: typed clean {MIN_WORD}+ times, ms over its usual for the length · "
+            f"messy: {MIN_MESSY}+ attempts, % with a wrong key or backspace")
+
+
+CLEAN_TIMES = 50   # clean typings that make a word, trigram or bigram count as drilled
+
+
+def list_words_of(name):
+    """The words of a list, lowercased, from the repo's assets (the venv sits in analysis/, beside them); None if not there."""
+    path = Path(sys.prefix).parent.parent / "assets" / ("english.json" if name == "english_200" else f"{name}.json")
+    return sorted({w.lower() for w in json.loads(path.read_text())["words"]}) if path.exists() else None
+
+
+def grams(word, k):
+    return [word[i:i + k] for i in range(len(word) - k + 1)]
+
+
+def coverage_box(words: pl.DataFrame, lists):
+    """For each list, the share of its distinct words, trigrams and bigrams typed at all, and typed clean often."""
+    done = words.filter(pl.col("done")).with_columns(pl.col("word").str.to_lowercase())
+    met = dict(done.group_by("word").agg(pl.len()).iter_rows())
+    clean = dict(done.filter(~pl.col("messy")).group_by("word").agg(pl.len()).iter_rows())
+    def counts(seen, k):       # how many times each k-gram was typed, inside the words in `seen`
+        out = Counter()
+        for w, n in seen.items():
+            for g in ([w] if k == 0 else grams(w, k)):
+                out[g] += n
+        return out
+    levels = [("typed at least once", {k: counts(met, k) for k in (0, 3, 2)}, 1),
+              (f"typed clean {CLEAN_TIMES}+ times", {k: counts(clean, k) for k in (0, 3, 2)}, CLEAN_TIMES)]
+    lists = sorted(lists, key=lambda name: len(list_words_of(name) or []))     # shortest list first
+    blocks = []
+    for head, seen, least in levels:
+        rows = []
+        for name in lists:
+            if (ws := list_words_of(name)) is None:
+                continue
+            row = [name]
+            for k in (0, 3, 2):
+                have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
+                share = sum(seen[k][g] >= least for g in have) / len(have)
+                row += [len(have), hbar(share, 8), share * 100]
+            rows.append(tuple(row))
+        if not rows:
+            return None
+        cols = [(head.ljust(max(len(l[0]) for l in levels)), "<", "")]
+        for what in ("words", "trigrams", "bigrams"):
+            cols += [(what, ">", "d"), ("", "<", ""), ("%", ">", ".0f")]
+        blocks.append(table(cols, rows))
+    return ("lists covered", "\n\n".join(blocks),
+            "of the distinct words in each list, and of the distinct runs of 3 and of 2 letters inside them, the % typed to the end "
+            "in any sprint or master drill, whichever list it came from · clean = no wrong key and no backspace")
+
+
 def full_view(a, con, drills):
+    lit = drills.filter(pl.col("mode") == "literature").height
+    drills = drills.filter(pl.col("mode") != "literature")   # another language: its words and pace do not pool with the lists
     judged = drills.filter(pl.col("outcome").is_in(["failed", "completed"]) & (pl.col("mode") != "practice"))
     if judged.height < 2:
         print("\nnot enough drills yet\n")
@@ -921,25 +1004,25 @@ def full_view(a, con, drills):
     hours = drills["secs"].fill_null(0).sum() / 3600
     keys = drills["chars_typed"].sum()
     title = (f"teepee · {days} day{'s' if days != 1 else ''} · {hours:.1f} h at the keys · "
-             f"{drills.height} drills · {keys:,} keys".replace(",", " ") + window(a))
+             f"{drills.height} drills · {keys:,} keys".replace(",", " ") + window(a)
+             + (" · literature left out" if lit else ""))
     lead = (title, *exercise_table(per, drills.filter(pl.col("mode") == "practice")))
 
-    several = 2 if len(per) > 1 else 1
-    where = "in 2+ exercises · " if several > 1 else ""
     parts = [
         lead,
         records(con, drills, words, id_list(drills)),
         journal_box(con),
-        ("slow words · everywhere", slow_words(words, several),
-         f"{where}typed clean {MIN_WORD}+ times · ms over what the gaps of its exercise predict for the length"),
-        ("messy words · everywhere", messy_words(words, several),
-         f"{where}{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
+        ("slow words · everywhere", lambda n: slow_words(words, n),
+         f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes"),
+        ("messy words · everywhere", lambda n: messy_words(words, n),
+         f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
         bigram_box(gaps_in),
         letters_box(gaps_in),
         same_words(words, list(per)),
         keyboards_box(judged, gaps_in),
-        misses_box(con, ids),
         *rhythm(drills),
+        coverage_box(words, [e["d"]["source"][0] for e in per.values() if e["mode"] == "sprint"]),
+        *(list_words(words.filter(pl.col("ex") == name), name) for name, e in per.items() if e["mode"] == "sprint"),
     ]
     print("\n" + soft(grid([], [p for p in parts if p])) + "\n")
 

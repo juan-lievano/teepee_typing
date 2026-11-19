@@ -126,15 +126,17 @@ teepee stats                 # one box: the exercise you last played (a mode on 
                              # wpm per drill (40 groups once past 40), oldest left, all time
 teepee stats sprint          # one exercise, every box on its drills alone: the wpm bars, then by day,
 teepee stats master --list english_10k      # the three gaps (into a word, letter to letter, into
-teepee stats lit --book quijote             # the space), slow words (clean attempts, ms over what
-                             # the gaps predict for the length), messy words (wrong key or backspace;
+teepee stats lit --book quijote             # the space), slow words (clean attempts, ms slower
+                             # than a word that long usually takes), messy words (wrong key or backspace;
                              # for master, drill-ending fails), the slowest and fastest bigrams and
                              # the gap into each letter, both only between keys off the home row: a
                              # home-row mod is reported when its tap is decided, not when it is pressed
-teepee stats --full          # the whole record: a row per exercise (drills, minutes, wpm, the three
+teepee stats --full          # the whole record, literature left out: a row per exercise (drills, minutes, wpm, the three
                              # gaps, wpm over time), then pooled over every exercise: slow and messy
-                             # words (in 2+ exercises), bigrams, letters; the same words in two
-                             # exercises; pace by hour and by time into a session; records
+                             # words, bigrams, letters; the same words in two
+                             # exercises; pace by hour and by time into a session; records;
+                             # each sprint list's slowest and most mistyped words;
+                             # how much of each sprint list (words, trigrams, bigrams) has been typed
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
