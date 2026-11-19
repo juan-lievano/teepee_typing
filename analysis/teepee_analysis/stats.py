@@ -942,20 +942,20 @@ def coverage_box(words: pl.DataFrame, lists):
     for name in sorted(lists, key=lambda name: len(list_words_of(name) or [])):     # shortest list first
         if (ws := list_words_of(name)) is None:
             continue
-        over = min(seen[0][w] for w in ws)        # every word has been typed this many times
-        row = [name, f"{over}×"]
+        row = [name]
         for k in (0, 3, 2):
             have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
+            over = min(seen[k][g] for g in have)        # every one of them has been typed this many times
             share = sum(seen[k][g] > over for g in have) / len(have)
-            row += [len(have), hbar(share, 8), int(share * 100)]      # rounded down: 100 only when none is missing
+            row += [len(have), f"{over}×", hbar(share, 8), int(share * 100)]      # rounded down: 100 only when none is missing
         rows.append(tuple(row))
     if not rows:
         return None
-    cols = [("list", "<", ""), ("all typed", ">", "")]
+    cols = [("list", "<", "")]
     for what in ("words", "trigrams", "bigrams"):
-        cols += [(what, ">", "d"), ("", "<", ""), ("%", ">", "d")]
+        cols += [(what, ">", "d"), ("all", ">", ""), ("", "<", ""), ("%", ">", "d")]
     return ("lists covered", table(cols, rows),
-            "all typed = times every word has been typed · % = how much has been typed once more")
+            "all = times every one has been typed · % = how many have been typed once more")
 
 
 def full_view(a, con, drills):
@@ -984,8 +984,10 @@ def full_view(a, con, drills):
     days = drills["day"].n_unique()
     hours = drills["secs"].fill_null(0).sum() / 3600
     keys = drills["chars_typed"].sum()
+    # words typed right: a sprint also marks done the words it moved past wrong; master and practice only count exact ones
+    right = drills["words"].sum() - drills.filter(pl.col("mode") == "sprint")["words_wrong"].sum()
     title = (f"teepee · {days} day{'s' if days != 1 else ''} · {hours:.1f} h at the keys · "
-             f"{drills.height} drills · {keys:,} keys".replace(",", " ") + window(a)
+             f"{drills.height} drills · {right:,} words · {keys:,} keys".replace(",", " ") + window(a)
              + (" · literature left out" if lit else ""))
     lead = (title, *exercise_table(per, drills.filter(pl.col("mode") == "practice")))
 
