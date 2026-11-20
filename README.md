@@ -134,7 +134,7 @@ teepee stats lit --book quijote             # the space), slow words (clean atte
                              # home-row mod is reported when its tap is decided, not when it is pressed
 teepee stats --full          # the whole record, literature left out: a row per exercise (drills, minutes, wpm, the three
                              # gaps, wpm over time), then pooled over every exercise: slow and messy
-                             # words, bigrams, letters; every word as a dot, times typed
+                             # words, bigrams; every word as a dot, times typed
                              # against its pace; the same words in two
                              # exercises; pace by hour and by time into a session; records;
                              # each sprint list's slowest and most mistyped words;
