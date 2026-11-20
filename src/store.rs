@@ -155,9 +155,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     for list in crate::words::LIST_NAMES {
         let name = crate::words::full_name(list);
+        let origin = crate::words::origin(name);
+        let title = if origin == "monkeytype" { format!("Monkeytype {}", name.replace('_', " ")) } else { name.replace('_', " ") };
         conn.execute(
-            "INSERT OR IGNORE INTO sources (name, kind, lang, title, origin) VALUES (?1, 'wordlist', 'en', ?2, 'monkeytype')",
-            params![name, format!("Monkeytype {}", name.replace('_', " "))],
+            "INSERT OR IGNORE INTO sources (name, kind, lang, title, origin) VALUES (?1, 'wordlist', 'en', ?2, ?3)",
+            params![name, title, origin],
         )?;
     }
     Ok(())

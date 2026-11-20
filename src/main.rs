@@ -44,7 +44,7 @@ enum Cmd {
     /// is practised (~25 keystrokes of it) before a fresh drill (default).
     /// A setting left unsaid is the last master drill's.
     Master {
-        /// Word list: english 200, 1k, 5k or 10k [default: the last one, 10k at first]
+        /// Word list: english 200, 1k, 5k, 10k, or literary-200 … literary-25k [default: the last one, 10k at first]
         #[arg(long, value_parser = words::LIST_NAMES.to_vec())]
         list: Option<String>,
         /// Words per drill [default: the last one, 50 at first]
@@ -60,7 +60,7 @@ enum Cmd {
     /// nothing is practised. For going after a personal best; a fresh drill
     /// follows each one. A setting left unsaid is the last sprint drill's.
     Sprint {
-        /// Word list: english 200, 1k, 5k or 10k [default: the last one, 200 at first]
+        /// Word list: english 200, 1k, 5k, 10k, or literary-200 … literary-25k [default: the last one, 200 at first]
         #[arg(long, value_parser = words::LIST_NAMES.to_vec())]
         list: Option<String>,
         /// Words per drill [default: the last one, 50 at first]
@@ -202,13 +202,13 @@ fn main() -> Result<()> {
             let (list, words) = word_settings(list, words, last.as_ref(), "10k");
             let keep_case = keep_case.or_else(|| last.as_ref()?.get("keep_case")?.as_bool()).unwrap_or(false);
             let list = words::list(&list, keep_case).expect("a list name from clap or the record");
-            store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
+            store.register_source(list.name, "wordlist", Some("en"), None, Some(words::origin(list.name)))?;
             run(store, tags, afk, no_backspace, vec![Box::new(Master::new(list, words))])
         }
         Cmd::Sprint { list, words } => {
             let (list, words) = word_settings(list, words, store.last_config("sprint")?.as_ref(), "200");
             let list = words::list(&list, false).expect("a list name from clap or the record");
-            store.register_source(list.name, "wordlist", Some("en"), None, Some("monkeytype"))?;
+            store.register_source(list.name, "wordlist", Some("en"), None, Some(words::origin(list.name)))?;
             run(store, tags, afk, no_backspace, vec![Box::new(Sprint::new(list, words))])
         }
         Cmd::Lit { book } => {

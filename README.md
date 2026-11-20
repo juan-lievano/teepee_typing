@@ -16,6 +16,7 @@ teepee                       # master mode with the settings of the last master 
                              # (at first: 50 random words from english 10k)
 teepee master --words 30     # shorter drills
 teepee master --list 1k      # english 200 / 1k / 5k / 10k
+teepee master --list literary-5k   # words from classic books: literary-200 / 1k / 5k / 10k / 25k
 teepee master --keep-case    # keep "February", "I"; --keep-case=false lowercases again, like Monkeytype
 teepee sprint                # random words at normal difficulty: wrong keys are let through, nothing
                              # is practised; for personal bests (at first: 50 words from english 200)

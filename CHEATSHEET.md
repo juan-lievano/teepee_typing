@@ -6,10 +6,12 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 | **Type**          | `teepee`                                    | same as `teepee master`                         |
 |                   | `teepee master`                             | first wrong key fails; the word ×~25 keys       |
 |                   | &nbsp;&nbsp;`--list 200\|1k\|5k\|10k`       | word list (last; 10k)                           |
+|                   | &nbsp;&nbsp;`--list literary-5k`            | from classic books: `-200\|1k\|5k\|10k\|25k`     |
 |                   | &nbsp;&nbsp;`--words 30`                    | drill length (last; 50)                         |
 |                   | &nbsp;&nbsp;`--keep-case`                   | keep capitals; `=false` undoes (last; off)      |
 |                   | `teepee sprint`                             | wrong keys let through, for bests               |
 |                   | &nbsp;&nbsp;`--list 200\|1k\|5k\|10k`       | word list (last; 200)                           |
+|                   | &nbsp;&nbsp;`--list literary-5k`            | from classic books: `-200\|1k\|5k\|10k\|25k`     |
 |                   | &nbsp;&nbsp;`--words 25`                    | drill length (last; 50)                         |
 |                   | `teepee lit`                                | last book; a line repeats under 95%             |
 |                   | `teepee lit pride`                          | name, prefix or number                          |
@@ -58,3 +60,4 @@ Repo `~/Documents/Developing/teepee_typing`, data in `data/`. (last; x) = the mo
 |   | ────────────────────────────────── | ─────────────────────────────────────────────── |
 | **After editing** | `src/`                                      | `cargo install --path .`                        |
 |                   | `analysis/`                                 | `cd analysis && .venv/bin/pip install .`        |
+|                   | `assets/literary_books.json`                | `.venv/bin/teepee-literary`, then as `src/`     |
