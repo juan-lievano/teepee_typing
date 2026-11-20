@@ -81,12 +81,29 @@ CREATE INDEX IF NOT EXISTS keystrokes_by_target ON keystrokes(drill_id, target_i
 const SUMMARY_VIEW: &str = r#"
 DROP VIEW IF EXISTS drill_summary;
 CREATE VIEW drill_summary AS
-WITH k AS (
+WITH SCORING
+SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
+       COALESCE(s.chars_typed, 0)   AS chars_typed,
+       COALESCE(s.chars_correct, 0) AS chars_correct,
+       COALESCE(c.chars_scored, 0)  AS chars_scored,
+       COALESCE(c.words_wrong, 0)   AS words_wrong,
+       s.span_ns / 1e9              AS typing_secs,
+       CASE WHEN s.chars_typed >= MIN_CHARS AND s.span_ns > 0 THEN
+         c.chars_scored / 5.0 / (s.span_ns / 60e9) END                     AS wpm,
+       CASE WHEN s.chars_typed >= MIN_CHARS THEN
+         100.0 * s.chars_correct / s.chars_typed END                       AS accuracy
+FROM drills d LEFT JOIN s ON s.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id;
+"#;
+
+/// The reckoning itself, shared by `drill_summary` and `category_wpms` so
+/// the two cannot drift apart: per drill, `s` (keys typed, time) and `c`
+/// (characters scored, words wrong), over the keystrokes in KEYS.
+const SCORING: &str = r#"k AS (
   SELECT k.drill_id, k.target_idx, k.kind, k.correct, k.t_ns, k.pos,
          length(substr(t.text, 1, k.pos)) - length(replace(substr(t.text, 1, k.pos), ' ', '')) AS word,
          MIN(k.pos) OVER (PARTITION BY k.drill_id, k.target_idx ORDER BY k.seq
                           ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
-  FROM keystrokes k JOIN targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
+  FROM KEYS JOIN targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
   WHERE k.kind IN ('char', 'backspace')
 ),
 w AS (
@@ -107,49 +124,21 @@ c AS (
          SUM(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored,
          COUNT(*) FILTER (WHERE standing_wrong > 0)                      AS words_wrong
   FROM w GROUP BY drill_id
-)
-SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
-       COALESCE(s.chars_typed, 0)   AS chars_typed,
-       COALESCE(s.chars_correct, 0) AS chars_correct,
-       COALESCE(c.chars_scored, 0)  AS chars_scored,
-       COALESCE(c.words_wrong, 0)   AS words_wrong,
-       s.span_ns / 1e9              AS typing_secs,
-       CASE WHEN s.chars_typed >= MIN_CHARS AND s.span_ns > 0 THEN
-         c.chars_scored / 5.0 / (s.span_ns / 60e9) END                     AS wpm,
-       CASE WHEN s.chars_typed >= MIN_CHARS THEN
-         100.0 * s.chars_correct / s.chars_typed END                       AS accuracy
-FROM drills d LEFT JOIN s ON s.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id;
-"#;
+)"#;
 
+/// `sql` with SCORING written out over the keystrokes `keys` (a FROM item
+/// that names them `k`), and MIN_CHARS filled in.
+fn scored(sql: &str, keys: &str) -> String {
+    sql.replace("SCORING", &SCORING.replace("KEYS", keys)).replace("MIN_CHARS", &MIN_CHARS.to_string())
+}
+
+/// Only the keystrokes of the completed drills with drill ?1's mode and config.
 const CATEGORY_WPMS: &str = r#"
 WITH ids AS (
   SELECT d.id FROM drills d JOIN drills me ON me.id = ?1
   WHERE d.mode = me.mode AND d.config = me.config AND d.outcome = 'completed'
 ),
-k AS (
-  SELECT k.drill_id, k.target_idx, k.kind, k.correct, k.t_ns, k.pos,
-         length(substr(t.text, 1, k.pos)) - length(replace(substr(t.text, 1, k.pos), ' ', '')) AS word,
-         MIN(k.pos) OVER (PARTITION BY k.drill_id, k.target_idx ORDER BY k.seq
-                          ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
-  FROM ids JOIN keystrokes k ON k.drill_id = ids.id
-  JOIN targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
-  WHERE k.kind IN ('char', 'backspace')
-),
-w AS (
-  SELECT drill_id, target_idx, word,
-         COALESCE(SUM(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS standing_right,
-         COUNT(*) FILTER (WHERE kind = 'char' AND correct = 0 AND (later_pos IS NULL OR later_pos > pos)) AS standing_wrong
-  FROM k GROUP BY drill_id, target_idx, word
-),
-s AS (
-  SELECT drill_id, COUNT(*) FILTER (WHERE kind = 'char') AS chars_typed,
-         MAX(t_ns) FILTER (WHERE kind = 'char') - MIN(t_ns) FILTER (WHERE kind = 'char') AS span_ns
-  FROM k GROUP BY drill_id
-),
-c AS (
-  SELECT drill_id, SUM(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored
-  FROM w GROUP BY drill_id
-)
+SCORING
 SELECT s.drill_id, c.chars_scored / 5.0 / (s.span_ns / 60e9) AS wpm FROM s JOIN c USING (drill_id)
 WHERE s.chars_typed >= MIN_CHARS AND s.span_ns > 0 ORDER BY wpm DESC;
 "#;
@@ -227,7 +216,7 @@ impl Store {
              PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
-        conn.execute_batch(&SUMMARY_VIEW.replace("MIN_CHARS", &MIN_CHARS.to_string()))?;
+        conn.execute_batch(&scored(SUMMARY_VIEW, "keystrokes k"))?;
         migrate(&conn)?;
         Ok(Store { conn })
     }
@@ -261,10 +250,10 @@ impl Store {
     }
 
     /// The id and wpm of every completed drill with `drill`'s mode and config (itself included), fastest
-    /// first; the same reckoning as `drill_summary`, on those drills' keystrokes alone, which is
-    /// what keeps it quick enough to run between two drills.
+    /// first: `drill_summary`'s reckoning (SCORING) on those drills' keystrokes alone, which is
+    /// what keeps it quick.
     pub fn category_wpms(&self, drill: i64) -> Result<Vec<(i64, f64)>> {
-        let mut q = self.conn.prepare_cached(&CATEGORY_WPMS.replace("MIN_CHARS", &MIN_CHARS.to_string()))?;
+        let mut q = self.conn.prepare_cached(&scored(CATEGORY_WPMS, "ids JOIN keystrokes k ON k.drill_id = ids.id"))?;
         let rows = q.query_map(params![drill], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
