@@ -972,7 +972,7 @@ def cloud_box(words: pl.DataFrame):
         return None
     across, down = columns() - 12, CLOUD            # the box fills the terminal: its edges, its padding and the scale take 12
     wide, high = across * 2, down * 4
-    lo = math.floor(g["wpm"].min() / 10) * 10              # every word is on it: in wpm the slow end is short
+    lo = 0                                                 # every word is on it: in wpm the slow end is short
     hi = math.ceil(g["wpm"].quantile(0.998) / 10) * 10     # the fastest words are the few typed most: all but a stray one fit
     span = math.log2(g["n"].max() + 1)
     at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
