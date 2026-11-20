@@ -14,7 +14,7 @@ results stay comparable with Monkeytype's tests. All ordered by frequency.
 ## Literary lists
 
 Built here, not vendored: `teepee-literary` (`analysis/teepee_analysis/literary.py`) counts the
-words of the books named in `literary_books.json` (29 authors who wrote in English, 370 Project
+words of the books named in `literary_books.json` (28 authors who wrote in English, 366 Project
 Gutenberg texts, fetched 2026-11-19 into `data/corpus/`) and writes the lists. Each author
 counts the same however much they wrote; names are dropped. Each list is the top of one
 ranking, so `literary_1k` starts with `literary_200`.
