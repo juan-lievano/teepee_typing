@@ -110,7 +110,7 @@ impl Kernel {
                 break;
             }
             match &outcome {
-                Outcome::Failed { word, .. } => banner = Some(format!("missed  {word}")),
+                Outcome::Failed { word, .. } => banner = Some(format!("missed: {word}")),
                 Outcome::Afk => banner = Some("paused too long, drill void".to_string()),
                 Outcome::Completed { results, wpm } => {
                     // Accuracy counts every keypress, as Monkeytype does: a
@@ -122,7 +122,7 @@ impl Kernel {
                         results.iter().flat_map(|r| r.wrong_words.iter().map(String::as_str)).collect();
                     let mut b = format!("{wpm:.0} wpm · {acc:.0}%");
                     if !wrong.is_empty() {
-                        b.push_str(&format!("   missed  {}", wrong.join(", ")));
+                        b.push_str(&format!("   missed: {}", wrong.join(", ")));
                     }
                     if mode.ranked() {
                         // Read once per session; from then on each drill adds its own wpm.
@@ -153,11 +153,11 @@ impl Kernel {
                             }
                             let median = (all[(n - 1) / 2] + all[n / 2]) / 2.0;
                             let best: Vec<String> = all.iter().take(3).map(|w| format!("{w:.0}")).collect();
-                            b.push_str(&format!("\nmedian {median:.0} · best {}", best.join(", ")));
+                            b.push_str(&format!("\nmedian {median:.0}\nbest {}", best.join(", ")));
                             // The three before this one, newest first.
                             if recent.len() > 1 {
                                 let last: Vec<String> = recent[1..].iter().map(|w| format!("{w:.0}")).collect();
-                                b.push_str(&format!(" · last {}", last.join(", ")));
+                                b.push_str(&format!("\nlast {}", last.join(", ")));
                             }
                         }
                     }
@@ -637,7 +637,8 @@ const LINE_GAP: u16 = 1;
 fn draw(f: &mut ratatui::Frame, d: &Drill) {
     let [header, banner, body, footer] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(2),
+        // The result and up to three lines under it, then a blank one.
+        Constraint::Length(5),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
