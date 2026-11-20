@@ -488,7 +488,7 @@ fn run(
 ) -> Result<()> {
     let terminal = ratatui::init();
     let rx = input::spawn();
-    let mut kernel = Kernel { store, rx, terminal, tags, afk, no_backspace };
+    let mut kernel = Kernel { store, ranked: Default::default(), rx, terminal, tags, afk, no_backspace };
     let result = kernel.run(first);
     ratatui::restore();
     result

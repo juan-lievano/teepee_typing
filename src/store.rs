@@ -121,6 +121,39 @@ SELECT d.id, d.mode, d.parent_drill, d.started_at_ms, d.outcome,
 FROM drills d LEFT JOIN s ON s.drill_id = d.id LEFT JOIN c ON c.drill_id = d.id;
 "#;
 
+const CATEGORY_WPMS: &str = r#"
+WITH ids AS (
+  SELECT d.id FROM drills d JOIN drills me ON me.id = ?1
+  WHERE d.mode = me.mode AND d.config = me.config AND d.outcome = 'completed'
+),
+k AS (
+  SELECT k.drill_id, k.target_idx, k.kind, k.correct, k.t_ns, k.pos,
+         length(substr(t.text, 1, k.pos)) - length(replace(substr(t.text, 1, k.pos), ' ', '')) AS word,
+         MIN(k.pos) OVER (PARTITION BY k.drill_id, k.target_idx ORDER BY k.seq
+                          ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) AS later_pos
+  FROM ids JOIN keystrokes k ON k.drill_id = ids.id
+  JOIN targets t ON t.drill_id = k.drill_id AND t.idx = k.target_idx
+  WHERE k.kind IN ('char', 'backspace')
+),
+w AS (
+  SELECT drill_id, target_idx, word,
+         COALESCE(SUM(correct) FILTER (WHERE kind = 'char' AND (later_pos IS NULL OR later_pos > pos)), 0) AS standing_right,
+         COUNT(*) FILTER (WHERE kind = 'char' AND correct = 0 AND (later_pos IS NULL OR later_pos > pos)) AS standing_wrong
+  FROM k GROUP BY drill_id, target_idx, word
+),
+s AS (
+  SELECT drill_id, COUNT(*) FILTER (WHERE kind = 'char') AS chars_typed,
+         MAX(t_ns) FILTER (WHERE kind = 'char') - MIN(t_ns) FILTER (WHERE kind = 'char') AS span_ns
+  FROM k GROUP BY drill_id
+),
+c AS (
+  SELECT drill_id, SUM(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored
+  FROM w GROUP BY drill_id
+)
+SELECT c.chars_scored / 5.0 / (s.span_ns / 60e9) AS wpm FROM s JOIN c USING (drill_id)
+WHERE s.chars_typed >= MIN_CHARS AND s.span_ns > 0 ORDER BY wpm DESC;
+"#;
+
 /// A drill with fewer character keystrokes than this gets no WPM or
 /// accuracy (its keystrokes and outcome still count). teepee-stats applies
 /// the same number.
@@ -225,6 +258,15 @@ impl Store {
             .query_row("SELECT config FROM drills WHERE mode = ?1 ORDER BY id DESC LIMIT 1", params![mode], |r| r.get(0))
             .optional()?;
         Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    /// The wpm of every completed drill with `drill`'s mode and config (itself included), fastest
+    /// first; the same reckoning as `drill_summary`, on those drills' keystrokes alone, which is
+    /// what keeps it quick enough to run between two drills.
+    pub fn category_wpms(&self, drill: i64) -> Result<Vec<f64>> {
+        let mut q = self.conn.prepare_cached(&CATEGORY_WPMS.replace("MIN_CHARS", &MIN_CHARS.to_string()))?;
+        let rows = q.query_map(params![drill], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn end_drill(&self, drill: i64, outcome: &Outcome, ended_at_ns: i64) -> Result<()> {

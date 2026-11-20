@@ -114,6 +114,11 @@ pub trait Mode {
     /// Everything the drill will ask for, in order. Called once per drill.
     fn targets(&mut self) -> Vec<Target>;
     fn strictness(&self) -> Strictness;
+    /// Show, under a completed drill's result, the median and the three best
+    /// wpm of every completed drill with this mode and config.
+    fn ranked(&self) -> bool {
+        false
+    }
     /// Drills to push to the front of the queue once this one ends.
     fn after(&self, outcome: &Outcome) -> Vec<Followup>;
 }

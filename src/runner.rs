@@ -1,7 +1,8 @@
 //! The kernel: runs a queue of drills. Owns the terminal, the clock and the
 //! store. Implements the three strictness levels once, for every mode.
 
-use std::collections::VecDeque;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style, Stylize};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Paragraph};
 
 use crate::input::Stamped;
@@ -43,6 +44,9 @@ mod theme {
 
 pub struct Kernel {
     pub store: Store,
+    /// Per (mode, config) played this session: the wpm of its completed
+    /// drills, fastest first. Filled from the store at the first one.
+    pub ranked: HashMap<(&'static str, String), Vec<f64>>,
     pub rx: Receiver<Stamped>,
     pub terminal: DefaultTerminal,
     /// A gap this long between two keys voids the drill (outcome `afk`).
@@ -118,6 +122,28 @@ impl Kernel {
                     let mut b = format!("{wpm:.0} wpm · {acc:.0}%");
                     if !wrong.is_empty() {
                         b.push_str(&format!("   missed  {}", wrong.join(", ")));
+                    }
+                    if mode.ranked() {
+                        // Read once per session; from then on each drill adds its own wpm.
+                        let all = match self.ranked.entry((mode.name(), mode.config().to_string())) {
+                            Entry::Vacant(e) => e.insert(self.store.category_wpms(id)?),
+                            Entry::Occupied(e) => {
+                                let all = e.into_mut();
+                                let at = all.partition_point(|w| w > wpm);
+                                all.insert(at, *wpm);
+                                all
+                            }
+                        };
+                        if !all.is_empty() {
+                            let n = all.len();
+                            // A star on a drill among the three fastest, once there are more than three.
+                            if n > 3 && all.iter().filter(|w| **w > wpm + 0.01).count() < 3 {
+                                b = b.replacen(" wpm", " wpm ★", 1);
+                            }
+                            let median = (all[(n - 1) / 2] + all[n / 2]) / 2.0;
+                            let best: Vec<String> = all.iter().take(3).map(|w| format!("{w:.0}")).collect();
+                            b.push_str(&format!("\nmedian {median:.0} · best {}", best.join(", ")));
+                        }
                     }
                     banner = Some(b);
                 }
@@ -620,7 +646,10 @@ fn draw(f: &mut ratatui::Frame, d: &Drill) {
         header,
     );
     if let Some(b) = &d.banner {
-        f.render_widget(Line::from(format!(" {b}")).fg(theme::ERROR).bold(), banner);
+        // The result, and under it whatever the banner carries on a second line.
+        let mut lines = b.lines().map(|l| format!(" {l}"));
+        let first = Line::from(lines.next().unwrap_or_default()).fg(theme::ERROR).bold();
+        f.render_widget(Text::from_iter(std::iter::once(first).chain(lines.map(|l| Line::from(l).dim()))), banner);
     }
 
     // The text column, and a padded box around it painted in the theme.

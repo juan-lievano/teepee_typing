@@ -50,6 +50,10 @@ impl Mode for Sprint {
         Strictness::Lenient
     }
 
+    fn ranked(&self) -> bool {
+        true
+    }
+
     fn after(&self, outcome: &Outcome) -> Vec<Followup> {
         match outcome {
             Outcome::Aborted => vec![],
