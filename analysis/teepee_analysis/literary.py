@@ -4,10 +4,9 @@
     teepee-literary --report     also print what was kept and dropped
 
 Every author counts the same, however much they wrote: a word's score is its share of each
-author's words, averaged over the authors. A word must be used by MIN_AUTHORS of them, which
-is what keeps one writer's coinages and one book's characters out. Proper nouns go by how a
-word is written: one that is capitalised in the middle of a sentence far more often than it
-is not is a name. Each list is the top of the same ranking, so 1k starts with 200.
+author's words, averaged over the authors. Proper nouns go by how a word is written: one that
+is capitalised in the middle of a sentence far more often than it is not is a name. Each list
+is the top of the same ranking, so 1k starts with 200.
 
 Texts are kept in data/corpus/ (not in git); a book already there is not fetched again.
 """
@@ -28,7 +27,6 @@ BOOKS = REPO / "assets" / "literary_books.json"
 CORPUS = REPO / "data" / "corpus"
 MIRROR = "https://mirror.csclub.uwaterloo.ca/gutenberg"
 SIZES = [("200", 200), ("1k", 1000), ("5k", 5000), ("10k", 10000), ("25k", 25000)]
-MIN_AUTHORS = 4
 NAME_RATIO = 3          # capitalised mid-sentence this many times as often as lowercase: a name
 
 WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
@@ -39,7 +37,7 @@ IS_CONTRACTIONS = {"it's", "he's", "she's", "that's", "there's", "what's", "let'
 HAD = {"i'd", "he'd", "she'd", "you'd", "we'd", "they'd", "it'd", "who'd", "there'd"}     # other 'd is verse: seem'd, pass'd
 SHORT = set("a i o of to in he it as is at on be my by me so or no we an if up do us go am oh ah ye ay ha eh lo ho ox ma pa hi".split())
 ROMAN = re.compile(r"(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})")
-# What four authors share and still is not a word to practise: French, German, Italian and Latin
+# In the books and still not a word to practise: French, German, Italian and Latin
 # (James, Wharton, the Brontës and Forster quote them freely), dialect spellings, Gutenberg's own notes.
 NOT_WORDS = set("""
 vous que von qui une mais sich comme bonne classe nicht fac fait faut dei grande eau merci oui femme monde donc
@@ -51,7 +49,7 @@ petite bon mot roi vie nuit jour temps fois trois faire dire voir tant mal chose
 terra firma annum non signore signorina senor senora contadina cavaliere dramatis sotto bric brac pince faux
 dat maister niver hev dinna lang tak hoo divil raight iver comin rayther nothin agin doin summat mornin willin
 mak ony natur bein sperrit lookin feyther ane leetle noo drownded hee twould heigho roo
-ebook ebooks etext http www online email gutenberg ing vol viz ccx
+ebook ebooks etext http www online email gutenberg licensing jpg seq ing vol viz ccx
 """.split())
 
 
@@ -98,7 +96,7 @@ def count(text: str):
                     pass                # a heading, a speaker's name, a roman numeral
                 elif key == "i" or key.startswith("i'"):
                     low[key] += 1       # the pronoun is no name
-                elif w[0].isupper():
+                elif w != key:              # a capital anywhere: d'Urberville is a name too
                     (start if opens else cap)[key] += 1
                 else:
                     low[key] += 1
@@ -123,14 +121,13 @@ def build(report: bool):
         print(f"  {author:22} {len(books):3} books {sum(total.values()):>10,} words", file=sys.stderr)
 
     names = {w for w, n in cap_all.items() if n > NAME_RATIO * low_all[w]}
-    score, used_by = Counter(), Counter()
+    score = Counter()
     for author, total in per_author.items():
         size = sum(n for w, n in total.items() if w not in names and low_all[w])
         for w, n in total.items():
             if w not in names and low_all[w]:      # never once in lowercase: a name seen only at line starts
                 score[w] += n / size / len(per_author)
-                used_by[w] += 1
-    ranked = [w for w, _ in score.most_common() if used_by[w] >= MIN_AUTHORS]
+    ranked = [w for w, _ in score.most_common()]
     ranked = ["I" + w[1:] if w == "i" or w.startswith("i'") else w for w in ranked]
 
     for short, n in SIZES:
@@ -141,11 +138,9 @@ def build(report: bool):
         (REPO / "assets" / f"literary_{short}.json").write_text(json.dumps(out, ensure_ascii=False, indent=0) + "\n")
     books = sum(len(b) for b in authors.values())
     print(f"{len(authors)} authors, {books} books, {sum(sum(t.values()) for t in per_author.values()):,} words; "
-          f"{len(names):,} names dropped, {len(ranked):,} words used by {MIN_AUTHORS}+ authors", file=sys.stderr)
+          f"{len(names):,} names dropped, {len(ranked):,} words kept", file=sys.stderr)
     if report:
         print("names dropped, most common:", " ".join(w for w, _ in cap_all.most_common(3000) if w in names)[:1500])
-        lonely = [w for w, _ in score.most_common(8000) if used_by[w] < MIN_AUTHORS]
-        print(f"\nleft out, under {MIN_AUTHORS} authors:", " ".join(lonely[:200]))
         lo = 0
         for short, n in SIZES:
             seg = ranked[lo:n]
