@@ -959,13 +959,13 @@ def coverage_box(words: pl.DataFrame, lists):
             "all = times every one has been typed · % = how many have been typed once more")
 
 
-CLOUD = (100, 16)     # the word cloud's plot, in characters (narrower in a narrow terminal): twice as many dots across, four times as many down
+CLOUD = (100, 24)     # the word cloud's plot, in characters (narrower in a narrow terminal): twice as many dots across, four times as many down
 
 
 def cloud_box(words: pl.DataFrame):
     """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, its
     median ms per key (its own space counted). A word typed n times is set at random between n and n + 1, so the
-    few-times-typed words fill a band rather than stack in a line. Where words crowd, more of the dots are lit."""
+    few-times-typed words fill a band rather than stack in a line. A dot is lit when any word lands on it."""
     import math
     import random
     g = (words.filter(pl.col("done") & ~pl.col("messy"))
@@ -984,8 +984,7 @@ def cloud_box(words: pl.DataFrame):
         x = int(at(n + random.Random(word).random()) * wide)
         y = round((hi - min(max(pace, lo), hi)) / (hi - lo) * (high - 1))
         count[min(x, wide - 1), y] += 1
-    full = sorted(count.values())[len(count) * 9 // 10]    # a dot holding this many words is surely lit
-    lit = {d for d, c in count.items() if random.Random(repr(d)).random() < c / full}
+    lit = set(count)                                       # a dot is lit when any word lands on it
     lines = []
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
