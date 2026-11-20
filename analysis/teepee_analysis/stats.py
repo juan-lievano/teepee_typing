@@ -955,7 +955,7 @@ def coverage_box(words: pl.DataFrame, lists):
             "all = times every one has been typed · % = how many have been typed once more")
 
 
-CLOUD = 32            # lines of the word cloud's plot, which is as wide as the terminal: two dots across a character, four down
+CLOUD = (20, 5)       # the word cloud's scale: a label every 20 wpm, 5 lines apart (the plot is as wide as the terminal)
 
 
 def cloud_box(words: pl.DataFrame):
@@ -970,17 +970,19 @@ def cloud_box(words: pl.DataFrame):
          .group_by("word").agg(pl.len().alias("n"), (12000 / pl.col("ms_per_key").median()).alias("wpm")))    # 60 000 ms over 5 keys
     if g.height < 100:
         return None
-    across, down = columns() - 12, CLOUD            # the box fills the terminal: its edges, its padding and the scale take 12
-    wide, high = across * 2, down * 4
+    step, apart = CLOUD
     lo = 0                                                 # every word is on it: in wpm the slow end is short
-    hi = math.ceil(g["wpm"].quantile(0.998) / 10) * 10     # the fastest words are the few typed most: all but a stray one fit
+    hi = math.ceil(g["wpm"].quantile(0.998) / step) * step     # the fastest words are the few typed most: all but a stray one fit
+    across = columns() - 12                         # the box fills the terminal: its edges, its padding and the scale take 12
+    down = (hi - lo) // step * apart + 1            # a line for the top label, then `apart` lines to each label below it
+    wide = across * 2                               # two dots across a character, four down
     span = math.log2(g["n"].max() + 1)
     at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
     lit = set()                                            # a dot is lit when any word lands on it
     for word, n, wpm in g.iter_rows():
         x = int(at(n + random.Random(word).random()) * wide)
-        lit.add((min(x, wide - 1), round((hi - min(wpm, hi)) / (hi - lo) * (high - 1))))
-    labels = {round((hi - v) / (hi - lo) * (down - 1)): v for v in range(lo, hi + 1, 20)}
+        lit.add((min(x, wide - 1), round((hi - min(wpm, hi)) / step * apart * 4 + 1.5)))      # a labelled speed is the middle of its line
+    labels = {(hi - v) // step * apart: v for v in range(lo, hi + 1, step)}
     lines = []
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
