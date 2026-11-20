@@ -54,7 +54,7 @@ but at most 10 times (`PRACTICE_CHARS`, `MAX_REPS` in `src/modes/practice.rs`),
 and a fresh drill starts, with no menu in between.
 A finished sprint shows its wpm, accuracy and missed words above the next one, and under them the median
 and three best wpm of every completed sprint with the same settings (list, words, `--no-backspace`), itself included;
-a ★ after its wpm when it is one of those three. The database is read for this once, at the first sprint finished.
+a ★ after its wpm when it is one of those three, then the wpm of the three sprints before it, newest first. The database is read for this once, at the first sprint finished.
 A pause longer than `--afk` seconds (default 3) between two keys voids the
 drill: it is saved with outcome `afk`, excluded from stats, and the mode
 restarts. Waiting before the first key costs nothing.

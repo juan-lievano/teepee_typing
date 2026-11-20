@@ -45,8 +45,9 @@ mod theme {
 pub struct Kernel {
     pub store: Store,
     /// Per (mode, config) played this session: the wpm of its completed
-    /// drills, fastest first. Filled from the store at the first one.
-    pub ranked: HashMap<(&'static str, String), Vec<f64>>,
+    /// drills, fastest first, and of its newest four, newest first. Filled
+    /// from the store at the first one.
+    pub ranked: HashMap<(&'static str, String), (Vec<f64>, Vec<f64>)>,
     pub rx: Receiver<Stamped>,
     pub terminal: DefaultTerminal,
     /// A gap this long between two keys voids the drill (outcome `afk`).
@@ -125,13 +126,23 @@ impl Kernel {
                     }
                     if mode.ranked() {
                         // Read once per session; from then on each drill adds its own wpm.
-                        let all = match self.ranked.entry((mode.name(), mode.config().to_string())) {
-                            Entry::Vacant(e) => e.insert(self.store.category_wpms(id)?),
+                        let (all, recent) = &*match self.ranked.entry((mode.name(), mode.config().to_string())) {
+                            Entry::Vacant(e) => {
+                                let rows = self.store.category_wpms(id)?;
+                                let mut by_id = rows.clone();
+                                by_id.sort_by_key(|r| std::cmp::Reverse(r.0));
+                                e.insert((
+                                    rows.iter().map(|r| r.1).collect(),
+                                    by_id.iter().take(4).map(|r| r.1).collect(),
+                                ))
+                            }
                             Entry::Occupied(e) => {
-                                let all = e.into_mut();
-                                let at = all.partition_point(|w| w > wpm);
-                                all.insert(at, *wpm);
-                                all
+                                let both = e.into_mut();
+                                let at = both.0.partition_point(|w| w > wpm);
+                                both.0.insert(at, *wpm);
+                                both.1.insert(0, *wpm);
+                                both.1.truncate(4);
+                                both
                             }
                         };
                         if !all.is_empty() {
@@ -143,6 +154,11 @@ impl Kernel {
                             let median = (all[(n - 1) / 2] + all[n / 2]) / 2.0;
                             let best: Vec<String> = all.iter().take(3).map(|w| format!("{w:.0}")).collect();
                             b.push_str(&format!("\nmedian {median:.0} · best {}", best.join(", ")));
+                            // The three before this one, newest first.
+                            if recent.len() > 1 {
+                                let last: Vec<String> = recent[1..].iter().map(|w| format!("{w:.0}")).collect();
+                                b.push_str(&format!(" · last {}", last.join(", ")));
+                            }
                         }
                     }
                     banner = Some(b);

@@ -150,7 +150,7 @@ c AS (
   SELECT drill_id, SUM(CASE WHEN standing_wrong = 0 THEN standing_right ELSE 0 END) AS chars_scored
   FROM w GROUP BY drill_id
 )
-SELECT c.chars_scored / 5.0 / (s.span_ns / 60e9) AS wpm FROM s JOIN c USING (drill_id)
+SELECT s.drill_id, c.chars_scored / 5.0 / (s.span_ns / 60e9) AS wpm FROM s JOIN c USING (drill_id)
 WHERE s.chars_typed >= MIN_CHARS AND s.span_ns > 0 ORDER BY wpm DESC;
 "#;
 
@@ -260,12 +260,12 @@ impl Store {
         Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
     }
 
-    /// The wpm of every completed drill with `drill`'s mode and config (itself included), fastest
+    /// The id and wpm of every completed drill with `drill`'s mode and config (itself included), fastest
     /// first; the same reckoning as `drill_summary`, on those drills' keystrokes alone, which is
     /// what keeps it quick enough to run between two drills.
-    pub fn category_wpms(&self, drill: i64) -> Result<Vec<f64>> {
+    pub fn category_wpms(&self, drill: i64) -> Result<Vec<(i64, f64)>> {
         let mut q = self.conn.prepare_cached(&CATEGORY_WPMS.replace("MIN_CHARS", &MIN_CHARS.to_string()))?;
-        let rows = q.query_map(params![drill], |r| r.get(0))?;
+        let rows = q.query_map(params![drill], |r| Ok((r.get(0)?, r.get(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
