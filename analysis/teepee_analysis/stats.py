@@ -959,14 +959,12 @@ CLOUD = (20, 5)       # the word cloud's scale: a label every 20 wpm, 5 lines ap
 
 
 def count_ticks(at, most, across):
-    """The line of labels under a doubling scale: 1, 2, 4 ... first, then the counts between them
-    (3, 6, 12 ..., then 5, 7 and their doubles, then every other one) wherever a label still has room."""
-    odd = lambda n: n // (n & -n)                       # a count with its factors of two taken out: 12 -> 3
+    """The line of labels under a doubling scale: 1, 2, 4, 8 ..."""
     line = [" "] * (across + 4)
-    for n in sorted(range(1, most + 1), key=lambda n: (odd(n), n)):
-        i, label = int(at(n) * across), str(n)
-        if not "".join(line[max(i - 2, 0): i + len(label) + 2]).strip():
-            line[i: i + len(label)] = label
+    n = 1
+    while n <= most:
+        line[int(at(n) * across): int(at(n) * across) + len(str(n))] = str(n)
+        n *= 2
     return "".join(line).rstrip()
 
 
