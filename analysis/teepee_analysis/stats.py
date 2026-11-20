@@ -955,44 +955,43 @@ def coverage_box(words: pl.DataFrame, lists):
             "all = times every one has been typed · % = how many have been typed once more")
 
 
-CLOUD = 24            # lines of the word cloud's plot, which is as wide as the terminal: two dots across a character, four down
+CLOUD = 32            # lines of the word cloud's plot, which is as wide as the terminal: two dots across a character, four down
 
 
 def cloud_box(words: pl.DataFrame):
-    """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, its
-    median ms per key (its own space counted). A word typed n times is set at random between n and n + 1, so the
-    few-times-typed words fill a band rather than stack in a line. A dot is lit when any word lands on it."""
+    """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, the
+    wpm its keys were typed at (five keys to a word, its own space counted; the median of its clean typings).
+    A word typed n times is set at random between n and n + 1, so the few-times-typed words fill a band rather
+    than stack in a line. A dot is lit when any word lands on it."""
     import math
     import random
     g = (words.filter(pl.col("done") & ~pl.col("messy"))
-         .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("pace"))
-         .group_by("word").agg(pl.len().alias("n"), pl.col("pace").median()))
+         .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("ms_per_key"))
+         .group_by("word").agg(pl.len().alias("n"), (12000 / pl.col("ms_per_key").median()).alias("wpm")))    # 60 000 ms over 5 keys
     if g.height < 100:
         return None
     across, down = columns() - 12, CLOUD            # the box fills the terminal: its edges, its padding and the scale take 12
     wide, high = across * 2, down * 4
-    lo = math.floor(g["pace"].quantile(0.002) / 10) * 10   # the fastest words are the few typed most: all but a stray one fit
-    hi = math.ceil(g["pace"].quantile(0.97) / 10) * 10     # the slowest are once-typed words; those past this are left off
+    lo = math.floor(g["wpm"].quantile(0.03) / 10) * 10     # the slowest are once-typed words; those under this are left off
+    hi = math.ceil(g["wpm"].quantile(0.998) / 10) * 10     # the fastest words are the few typed most: all but a stray one fit
     span = math.log2(g["n"].max() + 1)
     at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
-    count = Counter()
-    for word, n, pace in g.filter(pl.col("pace") <= hi).iter_rows():
+    lit = set()                                            # a dot is lit when any word lands on it
+    for word, n, wpm in g.filter(pl.col("wpm") >= lo).iter_rows():
         x = int(at(n + random.Random(word).random()) * wide)
-        y = round((hi - min(max(pace, lo), hi)) / (hi - lo) * (high - 1))
-        count[min(x, wide - 1), y] += 1
-    lit = set(count)                                       # a dot is lit when any word lands on it
+        lit.add((min(x, wide - 1), round((hi - min(wpm, hi)) / (hi - lo) * (high - 1))))
+    labels = {round((hi - v) / (hi - lo) * (down - 1)): v for v in range(lo, hi + 1, 20)}
     lines = []
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
-        label = {0: hi, down // 2: (hi + lo) / 2, down - 1: lo}.get(r)
-        lines.append((f"{label:>4.0f} │" if label is not None else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
+        lines.append((f"{labels[r]:>4} │" if r in labels else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
     ticks = [" "] * (across + 4)
     n = 1
     while n <= g["n"].max():
         ticks[int(at(n) * across): int(at(n) * across) + len(str(n))] = str(n)
         n *= 2
     lines += ["     └" + "─" * across, "      " + "".join(ticks).rstrip()]
-    return (f"{g.height} words · times typed clean against ms per key", "\n".join(lines))
+    return (f"{g.height} words · times typed clean against wpm over the word's own keys", "\n".join(lines))
 
 
 def full_view(a, con, drills):
