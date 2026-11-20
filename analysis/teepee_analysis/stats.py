@@ -958,6 +958,18 @@ def coverage_box(words: pl.DataFrame, lists):
 CLOUD = (20, 5)       # the word cloud's scale: a label every 20 wpm, 5 lines apart (the plot is as wide as the terminal)
 
 
+def count_ticks(at, most, across):
+    """The line of labels under a doubling scale: 1, 2, 4 ... first, then the counts between them
+    (3, 6, 12 ..., then 5, 7 and their doubles, then every other one) wherever a label still has room."""
+    odd = lambda n: n // (n & -n)                       # a count with its factors of two taken out: 12 -> 3
+    line = [" "] * (across + 4)
+    for n in sorted(range(1, most + 1), key=lambda n: (odd(n), n)):
+        i, label = int(at(n) * across), str(n)
+        if not "".join(line[max(i - 2, 0): i + len(label) + 2]).strip():
+            line[i: i + len(label)] = label
+    return "".join(line).rstrip()
+
+
 def cloud_box(words: pl.DataFrame):
     """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, the
     wpm its keys were typed at (five keys to a word, its own space counted; the median of its clean typings).
@@ -987,12 +999,7 @@ def cloud_box(words: pl.DataFrame):
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
         lines.append((f"{labels[r]:>4} │" if r in labels else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
-    ticks = [" "] * (across + 4)
-    n = 1
-    while n <= g["n"].max():
-        ticks[int(at(n) * across): int(at(n) * across) + len(str(n))] = str(n)
-        n *= 2
-    lines += ["     └" + "─" * across, "      " + "".join(ticks).rstrip()]
+    lines += ["     └" + "─" * across, "      " + count_ticks(at, g["n"].max(), across)]
     return (f"{g.height} words · times typed clean against wpm over the word's own keys", "\n".join(lines))
 
 
