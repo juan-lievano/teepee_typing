@@ -943,23 +943,19 @@ def coverage_box(words: pl.DataFrame, lists):
     for name in sorted(lists, key=lambda name: len(list_words_of(name) or [])):     # shortest list first
         if (ws := list_words_of(name)) is None:
             continue
-        row = [name]
-        for k in (0, 3, 2):
+        for k, what in ((0, "words"), (3, "trigrams"), (2, "bigrams")):      # a line each: the box is narrow and as tall as its row
             have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
             over = min(seen[k][g] for g in have)        # every one of them has been typed this many times
             share = sum(seen[k][g] > over for g in have) / len(have)
-            row += [len(have), f"{over}×", hbar(share, 8), int(share * 100)]      # rounded down: 100 only when none is missing
-        rows.append(tuple(row))
+            rows.append((name if k == 0 else "", what, len(have), f"{over}×", hbar(share, 8), int(share * 100)))      # rounded down: 100 only when none is missing
     if not rows:
         return None
-    cols = [("list", "<", "")]
-    for what in ("words", "trigrams", "bigrams"):
-        cols += [(what, ">", "d"), ("all", ">", ""), ("", "<", ""), ("%", ">", "d")]
+    cols = [("list", "<", ""), ("", "<", ""), ("", ">", "d"), ("all", ">", ""), ("", "<", ""), ("%", ">", "d")]
     return ("lists covered", table(cols, rows),
             "all = times every one has been typed · % = how many have been typed once more")
 
 
-CLOUD = (100, 24)     # the word cloud's plot, in characters (narrower in a narrow terminal): twice as many dots across, four times as many down
+CLOUD = 24            # lines of the word cloud's plot, which is as wide as the terminal: two dots across a character, four down
 
 
 def cloud_box(words: pl.DataFrame):
@@ -973,7 +969,7 @@ def cloud_box(words: pl.DataFrame):
          .group_by("word").agg(pl.len().alias("n"), pl.col("pace").median()))
     if g.height < 100:
         return None
-    across, down = min(CLOUD[0], columns() - 12), CLOUD[1]
+    across, down = columns() - 12, CLOUD            # the box fills the terminal: its edges, its padding and the scale take 12
     wide, high = across * 2, down * 4
     lo = math.floor(g["pace"].quantile(0.002) / 10) * 10   # the fastest words are the few typed most: all but a stray one fit
     hi = math.ceil(g["pace"].quantile(0.97) / 10) * 10     # the slowest are once-typed words; those past this are left off
@@ -1035,18 +1031,18 @@ def full_view(a, con, drills):
     parts = [
         lead,
         records(con, drills, words, id_list(drills)),
-        journal_box(con),
         ("slow words · everywhere", lambda n: slow_words(words, n),
          f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes"),
         ("messy words · everywhere", lambda n: messy_words(words, n),
          f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
         bigram_box(gaps_in),
-        cloud_box(words),
         same_words(words, list(per)),
         keyboards_box(judged, gaps_in),
         *rhythm(drills),
         coverage_box(words, [e["d"]["source"][0] for e in per.values() if e["mode"] == "sprint"]),
         *(list_words(words.filter(pl.col("ex") == name), name) for name, e in per.items() if e["mode"] == "sprint"),
+        journal_box(con),
+        cloud_box(words),
     ]
     print("\n" + soft(grid([], [p for p in parts if p])) + "\n")
 
