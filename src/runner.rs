@@ -13,6 +13,9 @@ const SETTLE: Duration = Duration::from_millis(400);
 /// is the next one. The one ambiguity is a pending space after a finished
 /// word, so after this long without a key it is drawn as a faint dot.
 const HESITATE: Duration = Duration::from_millis(500);
+/// Lenient: letters typed past the end of a word are kept, shown in red
+/// after it, up to this many; more are logged and dropped.
+const MAX_EXTRA: usize = 8;
 
 use anyhow::Result;
 use ratatui::DefaultTerminal;
@@ -306,7 +309,10 @@ impl Kernel {
                     d.caret = false;
                     let pos = d.typed.len();
                     let exp = &d.expected[d.cur];
-                    let matched = exp.get(pos) == Some(&c);
+                    // A letter past the end of the word being typed is extra:
+                    // it matches nothing, whatever text it lines up with.
+                    let (_, we) = word_span(exp, word_start(&d.typed));
+                    let matched = pos <= we && exp.get(pos) == Some(&c);
 
                     // Judge first, record second. `correct` means the kernel
                     // accepted the key as progress, so the key that ends a
@@ -342,16 +348,19 @@ impl Kernel {
                             submit_word(&mut d, ws, we, &typed_word);
                         }
                     } else {
-                        if matched || pos < exp.len() {
-                            // Lenient keeps the wrong key on screen.
+                        if matched || pos < we + MAX_EXTRA {
+                            // Lenient keeps the wrong key on screen, extra
+                            // letters after the word included.
                             d.typed.push(c);
                         }
-                        // Lenient, last key of the target: no space will
-                        // come, so the last word is submitted now.
+                        // Lenient, last key of a target that does not end in
+                        // a space (a sentence): no space will come, so the
+                        // last word is submitted now. A word target waits
+                        // for its space, whatever was typed in its place.
                         let len = exp.len();
                         if strictness == Strictness::Lenient && d.typed.len() == len {
                             let ws = word_start(&d.typed);
-                            let last_ws = word_span(exp, len - 1).0;
+                            let last_ws = word_span(exp, len).0;
                             if ws == last_ws && ws < len {
                                 let typed_word = d.typed[ws..].to_vec();
                                 submit_word(&mut d, ws, len, &typed_word);
@@ -541,20 +550,23 @@ fn reopen(d: &mut Drill, n: usize) {
 /// a word that ended up wrong (a wrong span, or a wrong letter standing in
 /// the word being typed) is worth nothing. After a resync `typed` holds the
 /// expected text for every submitted word, so a submitted word is judged by
-/// its span and the word being typed by its letters.
+/// its span and the word being typed by its letters (extra ones are wrong).
 fn live_scored(d: &Drill) -> usize {
     let exp = &d.expected[d.cur];
+    let missed = |ws: usize| d.wrong_spans.iter().any(|s| s.target == d.cur && s.start == ws);
+    let cws = word_start(&d.typed);
     let mut n = 0;
     let mut i = 0;
-    while i < d.typed.len() {
+    while i < cws {
         let (ws, we) = word_span(exp, i);
-        let upto = (we + 1).min(d.typed.len());
-        let wrong = d.wrong_spans.iter().any(|s| s.target == d.cur && s.start == ws)
-            || d.typed[ws..upto] != exp[ws..upto];
-        if !wrong {
-            n += upto - ws;
+        if !missed(ws) {
+            n += we + 1 - ws;
         }
-        i = upto.max(i + 1);
+        i = we + 1;
+    }
+    let (_, we) = word_span(exp, cws);
+    if !missed(cws) && exp[cws..we].starts_with(&d.typed[cws..]) {
+        n += d.typed.len() - cws;
     }
     n
 }
@@ -689,8 +701,16 @@ enum Glyph {
 }
 
 impl Drill<'_> {
+    /// Index in the current target of the next expected character: the
+    /// next letter of the word being typed, or the space after it once the
+    /// word is full (extra letters do not move it on).
+    fn cursor(&self) -> usize {
+        let (_, we) = word_span(&self.expected[self.cur], word_start(&self.typed));
+        self.typed.len().min(we)
+    }
+
     fn next_is_space(&self) -> bool {
-        self.expected[self.cur].get(self.typed.len()) == Some(&' ')
+        self.expected[self.cur].get(self.cursor()) == Some(&' ')
     }
 
     /// No key for HESITATE since the last one.
@@ -720,8 +740,16 @@ fn style(g: Glyph, faded: bool) -> Style {
 /// Glyph state of each expected character in target `i`.
 fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
     let exp = &d.expected[i];
-    let mut out = Vec::with_capacity(exp.len());
+    // In the current target: the next expected character, and the letters
+    // typed past the end of the word, drawn in red between it and its space.
+    let cursor = if i == d.cur { d.cursor() } else { 0 };
+    let extra: &[char] = if i == d.cur { d.typed.get(cursor..).unwrap_or(&[]) } else { &[] };
+    let extra_at = if extra.is_empty() { usize::MAX } else { cursor };
+    let mut out = Vec::with_capacity(exp.len() + extra.len());
     for (p, &c) in exp.iter().enumerate() {
+        if p == extra_at {
+            out.extend(extra.iter().map(|&t| (t, Glyph::Wrong)));
+        }
         if let Some(span) = d.wrong_spans.iter().find(|w| w.target == i && w.start <= p && p < w.end) {
             // A word submitted wrong stays on screen as typed, in red; letters
             // never typed stay faint, extra letters are appended.
@@ -739,9 +767,9 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
             Glyph::Done
         } else if i > d.cur {
             Glyph::Pending
-        } else if p < d.typed.len() {
+        } else if p < cursor {
             if d.typed[p] == c { Glyph::Done } else { Glyph::Wrong }
-        } else if p == d.typed.len() {
+        } else if p == cursor {
             Glyph::Cursor
         } else {
             Glyph::Pending
@@ -749,11 +777,14 @@ fn glyphs(d: &Drill, i: usize) -> Vec<(char, Glyph)> {
         // Show the wrong key itself where one was typed, so you see what
         // happened; a pending space gets its dot once you hesitate on it.
         let shown = match g {
-            Glyph::Wrong if c != ' ' => d.typed[p],
+            Glyph::Wrong => d.typed[p],
             Glyph::Cursor if c == ' ' && d.hesitating() => '·',
             _ => c,
         };
         out.push((shown, g));
+    }
+    if extra_at == exp.len() {
+        out.extend(extra.iter().map(|&t| (t, Glyph::Wrong)));
     }
     out
 }
