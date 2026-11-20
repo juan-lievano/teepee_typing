@@ -6,8 +6,9 @@
     teepee stats master --list english_10k    the three gaps, slow words, messy words, slowest and
     teepee stats lit --book quijote           fastest bigrams, the gap into each letter (off the home row)
     teepee stats --full                the whole record: every exercise in one table, then what holds across
-                                       them (slow and messy words, bigrams, letters), the same words in two
-                                       exercises, pace by hour and by time into a session, records
+                                       them (slow and messy words, bigrams, letters), every word as a dot (times
+                                       typed against pace), the same words in two exercises, pace by hour and
+                                       by time into a session, records
     --days N   look back N days (default: all)      --tag X   only drills tagged X
     --open     also draw the master progress graph and open it in the image viewer
 
@@ -958,6 +959,48 @@ def coverage_box(words: pl.DataFrame, lists):
             "all = times every one has been typed · % = how many have been typed once more")
 
 
+CLOUD = (48, 11)      # the word cloud's plot, in characters: twice as many dots across, four times as many down
+
+
+def cloud_box(words: pl.DataFrame):
+    """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, its
+    median ms per key (its own space counted). A word typed n times is set at random between n and n + 1, so the
+    few-times-typed words fill a band rather than stack in a line. Where words crowd, more of the dots are lit."""
+    import math
+    import random
+    g = (words.filter(pl.col("done") & ~pl.col("messy"))
+         .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("pace"))
+         .group_by("word").agg(pl.len().alias("n"), pl.col("pace").median()))
+    if g.height < 100:
+        return None
+    wide, high = CLOUD[0] * 2, CLOUD[1] * 4
+    lo = math.floor(g["pace"].quantile(0.002) / 10) * 10   # the fastest words are the few typed most: all but a stray one fit
+    hi = math.ceil(g["pace"].quantile(0.97) / 10) * 10     # the slowest are once-typed words; those past this sit on the top edge
+    span = math.log2(g["n"].max() + 1)
+    at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
+    count = Counter()
+    for word, n, pace in g.iter_rows():
+        x = int(at(n + random.Random(word).random()) * wide)
+        y = round((hi - min(max(pace, lo), hi)) / (hi - lo) * (high - 1))
+        count[min(x, wide - 1), y] += 1
+    full = sorted(count.values())[len(count) * 9 // 10]    # a dot holding this many words is surely lit
+    lit = {d for d, c in count.items() if random.Random(repr(d)).random() < c / full}
+    lines = []
+    for r in range(CLOUD[1]):
+        cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(CLOUD[0]))
+        label = {0: hi, CLOUD[1] // 2: (hi + lo) / 2, CLOUD[1] - 1: lo}.get(r)
+        lines.append((f"{label:>4.0f} │" if label is not None else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
+    ticks = [" "] * (CLOUD[0] + 4)
+    n = 1
+    while n <= g["n"].max():
+        ticks[int(at(n) * CLOUD[0]): int(at(n) * CLOUD[0]) + len(str(n))] = str(n)
+        n *= 2
+    lines += ["     └" + "─" * CLOUD[0], "      " + "".join(ticks).rstrip()]
+    return ("words · times typed against pace", "\n".join(lines),
+            f"a dot is a word, {g.height} of them · across: times typed clean, each doubling the same step · "
+            "up: its median ms per key")
+
+
 def full_view(a, con, drills):
     lit = drills.filter(pl.col("mode") == "literature").height
     drills = drills.filter(pl.col("mode") != "literature")   # another language: its words and pace do not pool with the lists
@@ -1001,6 +1044,7 @@ def full_view(a, con, drills):
          f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
         bigram_box(gaps_in),
         letters_box(gaps_in),
+        cloud_box(words),
         same_words(words, list(per)),
         keyboards_box(judged, gaps_in),
         *rhythm(drills),
