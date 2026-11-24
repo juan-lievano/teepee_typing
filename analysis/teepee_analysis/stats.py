@@ -988,8 +988,14 @@ def count_ticks(at, most, across):
     return "".join(line).rstrip()
 
 
-def cloud(g: pl.DataFrame, hi, spread=None):
-    """Rows of (word, n, value) as dots: across, n (each doubling the same step); up, the value, from 0 to `hi`.
+def cloud_most(words: pl.DataFrame):
+    """The count both clouds' scales run to, so their labels sit one above the other: the most times any word has
+    come up, which no word's clean typings can pass."""
+    return words.filter(pl.col("done")).group_by("word").len()["len"].max()
+
+
+def cloud(g: pl.DataFrame, hi, most, spread=None):
+    """Rows of (word, n, value) as dots: across, n up to `most` (each doubling the same step); up, the value, from 0 to `hi`.
     A word with count n is set at random between n and n + 1, so the low counts fill a band rather than stack in
     a line; up, with a `spread`, it is set off its value by a normal draw of deviation `spread(n)`, folded back at
     0 and `hi`. The words with the highest counts are placed first. A word whose dot is taken: without a `spread`
@@ -1002,7 +1008,7 @@ def cloud(g: pl.DataFrame, hi, spread=None):
     across = columns() - 12                         # the box fills the terminal: its edges, its padding and the scale take 12
     down = hi // step * apart + 1                   # a line for the top label, then `apart` lines to each label below it
     wide = across * 2                               # two dots across a character, four down
-    span = math.log2(g["n"].max() + 1)
+    span = math.log2(most + 1)
     at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
     lit = set()
     for word, n, value in g.sort(["n", "word"], descending=[True, False]).iter_rows():
@@ -1027,7 +1033,7 @@ def cloud(g: pl.DataFrame, hi, spread=None):
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
         lines.append((f"{labels[r]:>4} │" if r in labels else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
-    return "\n".join(lines + ["     └" + "─" * across, "      " + count_ticks(at, g["n"].max(), across)]), len(lit)
+    return "\n".join(lines + ["     └" + "─" * across, "      " + count_ticks(at, most, across)]), len(lit)
 
 
 def cloud_box(words: pl.DataFrame):
@@ -1041,7 +1047,7 @@ def cloud_box(words: pl.DataFrame):
     if g.height < 100:
         return None
     hi = math.ceil(g["wpm"].quantile(0.998) / CLOUD[0]) * CLOUD[0]     # the fastest words are the few typed most: all but a stray one fit
-    body, dots = cloud(g, hi)
+    body, dots = cloud(g, hi, cloud_most(words))
     return (f"{g.height} words on {dots} dots, the rest found none free · times typed clean against wpm over the word's own keys", body)
 
 
@@ -1053,7 +1059,7 @@ def clean_cloud_box(words: pl.DataFrame):
     g = words.filter(pl.col("done")).group_by("word").agg(pl.len().alias("n"), ((~pl.col("slip")).mean() * 100).alias("clean"))
     if g.height < 100:
         return None
-    body, dots = cloud(g, 100, lambda n: CLOUD_SD / (n + 1) ** 2)
+    body, dots = cloud(g, 100, cloud_most(words), lambda n: CLOUD_SD / (n + 1) ** 2)
     return (f"{g.height} words on {dots} dots · times seen (n) against % with no wrong key · "
             f"spread {CLOUD_SD}/(n+1)² points · up to {CLOUD_TRIES} tries for a free dot", body)
 
