@@ -199,6 +199,12 @@ WHERE r_rn - l_rn <= $max AND r_dirty = l_dirty AND (r_t - l_t) / 1e6 < 1000 * (
 # word was typed to its end or ended wrong; a drill aborted mid-word is not an
 # attempt. `messy` is any wrong key or backspace on the way; `wrong` is a
 # wrong key standing at the end (in master, the key that failed the drill).
+# `slip` is any wrong key at all: unlike `messy` it does not count the
+# backspaces that pass through a word typed right on the way back to mend
+# the one before it. A drill's first word has no gap into it, so no time:
+# `timed` is false for it. Whatever counts words keeps those rows; whatever
+# reads `ms` (CLEAN_TIMED: slow words, the same words in two exercises, the
+# speed cloud) leaves them out.
 WORDS = """
 WITH k AS (
   SELECT k.drill_id, k.target_idx, k.seq, k.pos, k.kind, k.correct, k.t_ns, t.text, t.kind AS tkind,
@@ -211,6 +217,7 @@ WITH k AS (
 w AS (
   SELECT drill_id, target_idx, word, any_value(text) AS text, any_value(tkind) AS tkind, max(t_ns) AS last_t,
          bool_or(kind = 'backspace' OR correct = 0) AS messy,
+         bool_or(kind = 'char' AND correct = 0) AS slip,
          count(*) FILTER (WHERE kind = 'char' AND correct = 0 AND (later_pos IS NULL OR later_pos > pos)) > 0 AS wrong,
          count(*) FILTER (WHERE kind = 'char' AND correct = 1 AND (later_pos IS NULL OR later_pos > pos)) AS standing
   FROM k GROUP BY 1, 2, 3
@@ -221,11 +228,13 @@ a AS (
          tkind = 'word' OR word < length(text) - length(replace(text, ' ', '')) AS has_sep
   FROM w
 )
-SELECT drill_id, $bare AS word, length(wtext) AS letters, has_sep, messy, wrong,
+SELECT drill_id, $bare AS word, length(wtext) AS letters, has_sep, messy, slip, wrong,
        wrong OR standing = length(wtext) + has_sep::INT AS done,
-       (last_t - prev_t) / 1e6 AS ms
-FROM a WHERE prev_t IS NOT NULL AND length(wtext) > 0
+       prev_t IS NOT NULL AS timed, (last_t - prev_t) / 1e6 AS ms
+FROM a WHERE length(wtext) > 0
 """
+
+CLEAN_TIMED = pl.col("done") & ~pl.col("messy") & pl.col("timed")     # the attempts a word's pace is read from
 
 MIN_WORD = 8     # clean attempts a word needs to be ranked for pace
 MIN_MESSY = 10   # attempts a word needs to be ranked for messiness
@@ -509,7 +518,7 @@ def sided(v, most, half=5):
 def with_excess(words: pl.DataFrame):
     """Clean attempts, each with its time over what its length predicts from the gaps S, L, E of its own exercise."""
     sep = pl.col("has_sep").cast(pl.Int64)
-    return words.filter(pl.col("done") & ~pl.col("messy")).with_columns(
+    return words.filter(CLEAN_TIMED).with_columns(
         (pl.col("ms") - (pl.col("S") + (pl.col("letters") - 1) * pl.col("L") + sep * pl.col("E"))).alias("excess"))
 
 
@@ -716,7 +725,7 @@ def exercise_table(per, practice):
 
 def same_words(words: pl.DataFrame, order):
     """Pairs of exercises that share words: the pace of those words, typed clean, in each."""
-    per = (words.filter(pl.col("done") & ~pl.col("messy"))
+    per = (words.filter(CLEAN_TIMED)
            .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("pc"))
            .group_by(["ex", "word"]).agg(pl.col("pc").median().alias("pc")))
     rows = []
@@ -955,7 +964,9 @@ def coverage_box(words: pl.DataFrame, lists):
             "all = times every one has been typed · % = how many have been typed once more")
 
 
-CLOUD = (20, 5)       # the word cloud's scale: a label every 20 wpm, 5 lines apart (the plot is as wide as the terminal)
+CLOUD = (20, 5)       # the word clouds' scale: a label every 20 wpm (or 20 %), 5 lines apart (the plot is as wide as the terminal)
+CLOUD_SD = 100        # the clean cloud sets a word seen n times off its share by a normal draw of deviation CLOUD_SD / (n + 1)² points
+CLOUD_TRIES = 8       # ... drawn again, up to this many times in all, while the dot it lands on is already lit
 
 
 def count_ticks(at, most, across):
@@ -968,37 +979,69 @@ def count_ticks(at, most, across):
     return "".join(line).rstrip()
 
 
-def cloud_box(words: pl.DataFrame):
-    """Every word as a dot: across, how many times it has been typed clean (each doubling the same step); up, the
-    wpm its keys were typed at (five keys to a word, its own space counted; the median of its clean typings).
-    A word typed n times is set at random between n and n + 1, so the few-times-typed words fill a band rather
-    than stack in a line. A dot is lit when any word lands on it."""
+def cloud(g: pl.DataFrame, hi, spread=None):
+    """Rows of (word, n, value) as dots: across, n (each doubling the same step); up, the value, from 0 to `hi`.
+    A word with count n is set at random between n and n + 1, so the low counts fill a band rather than stack in
+    a line; up, it is set off its value by a normal draw of deviation `spread(n)`, folded back at 0 and `hi`, and
+    both are drawn again (CLOUD_TRIES times at most, the words with the highest counts placed first) while the dot
+    is taken; a word that finds none free shares its first. Returns the plot and how many dots are lit."""
     import math
     import random
-    g = (words.filter(pl.col("done") & ~pl.col("messy"))
-         .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("ms_per_key"))
-         .group_by("word").agg(pl.len().alias("n"), (12000 / pl.col("ms_per_key").median()).alias("wpm")))    # 60 000 ms over 5 keys
-    if g.height < 100:
-        return None
     step, apart = CLOUD
-    lo = 0                                                 # every word is on it: in wpm the slow end is short
-    hi = math.ceil(g["wpm"].quantile(0.998) / step) * step     # the fastest words are the few typed most: all but a stray one fit
     across = columns() - 12                         # the box fills the terminal: its edges, its padding and the scale take 12
-    down = (hi - lo) // step * apart + 1            # a line for the top label, then `apart` lines to each label below it
+    down = hi // step * apart + 1                   # a line for the top label, then `apart` lines to each label below it
     wide = across * 2                               # two dots across a character, four down
     span = math.log2(g["n"].max() + 1)
     at = lambda n: math.log2(n) / span                     # where a count sits, 0 at the left edge to 1
-    lit = set()                                            # a dot is lit when any word lands on it
-    for word, n, wpm in g.iter_rows():
-        x = int(at(n + random.Random(word).random()) * wide)
-        lit.add((min(x, wide - 1), round((hi - min(wpm, hi)) / step * apart * 4 + 1.5)))      # a labelled speed is the middle of its line
-    labels = {(hi - v) // step * apart: v for v in range(lo, hi + 1, step)}
+    lit = set()
+    for word, n, value in g.sort(["n", "word"], descending=[True, False]).iter_rows():
+        rng = random.Random(word)
+        first = None
+        for _ in range(CLOUD_TRIES if spread else 1):
+            x, v = int(at(n + rng.random()) * wide), value
+            if spread:
+                v = abs(v + rng.gauss(0, spread(n))) % (2 * hi)
+                v = min(v, 2 * hi - v)
+            dot = (min(x, wide - 1), round((hi - min(v, hi)) / step * apart * 4 + 1.5))      # a labelled value is the middle of its line
+            first = first or dot
+            if dot not in lit:
+                break
+        else:
+            dot = first
+        lit.add(dot)
+    labels = {(hi - v) // step * apart: v for v in range(0, hi + 1, step)}
     lines = []
     for r in range(down):
         cells = (sum(DOTS[dx * 4 + dy] for dx in (0, 1) for dy in range(4) if (2 * c + dx, 4 * r + dy) in lit) for c in range(across))
         lines.append((f"{labels[r]:>4} │" if r in labels else "     │") + "".join(chr(0x2800 + b) if b else " " for b in cells))
-    lines += ["     └" + "─" * across, "      " + count_ticks(at, g["n"].max(), across)]
-    return (f"{g.height} words · times typed clean against wpm over the word's own keys", "\n".join(lines))
+    return "\n".join(lines + ["     └" + "─" * across, "      " + count_ticks(at, g["n"].max(), across)]), len(lit)
+
+
+def cloud_box(words: pl.DataFrame):
+    """Every word as a dot: across, how many times it has been typed clean (not as a drill's first word, which
+    has no time); up, the wpm its keys were typed at
+    (five keys to a word, its own space counted; the median of its clean typings)."""
+    import math
+    g = (words.filter(CLEAN_TIMED)
+         .with_columns((pl.col("ms") / (pl.col("letters") + pl.col("has_sep").cast(pl.Int64))).alias("ms_per_key"))
+         .group_by("word").agg(pl.len().alias("n"), (12000 / pl.col("ms_per_key").median()).alias("wpm")))    # 60 000 ms over 5 keys
+    if g.height < 100:
+        return None
+    hi = math.ceil(g["wpm"].quantile(0.998) / CLOUD[0]) * CLOUD[0]     # the fastest words are the few typed most: all but a stray one fit
+    return (f"{g.height} words · times typed clean against wpm over the word's own keys", cloud(g, hi)[0])
+
+
+def clean_cloud_box(words: pl.DataFrame):
+    """Every word as a dot: across, how many times it came up and was typed to its end or left wrong (a drill's
+    first word too); up, the share of those times no wrong key landed in it. Backspaces do not count against it. A word seen n times can only have a
+    share that is a multiple of 100/n, so it is spread on a bell curve: 25 points wide for a word seen once, where the share says little and the
+    words pile up, and narrowing with the square of the sightings, so the well-seen words keep to their lines."""
+    g = words.filter(pl.col("done")).group_by("word").agg(pl.len().alias("n"), ((~pl.col("slip")).mean() * 100).alias("clean"))
+    if g.height < 100:
+        return None
+    body, dots = cloud(g, 100, lambda n: CLOUD_SD / (n + 1) ** 2)
+    return (f"{g.height} words on {dots} dots · times seen (n) against % of those with no wrong key · "
+            f"spread {CLOUD_SD}/(n+1)² points, {CLOUD_TRIES} tries", body)
 
 
 def full_view(a, con, drills):
@@ -1049,6 +1092,7 @@ def full_view(a, con, drills):
         *(list_words(words.filter(pl.col("ex") == name), name) for name, e in per.items() if e["mode"] == "sprint"),
         journal_box(con),
         cloud_box(words),
+        clean_cloud_box(words),
     ]
     print("\n" + soft(grid([], [p for p in parts if p])) + "\n")
 
