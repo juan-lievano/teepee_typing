@@ -145,6 +145,7 @@ teepee stats --full          # the whole record, literature left out: a row per 
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
+teepee stats --bars 80       # 80 bars in the wpm diagram instead of 40, in the same width: fewer are fatter
 teepee journal               # the practice wall: a column per week, a cell per day, a dot in it for every
                              # 2 minutes typed (first key to last of every drill, practice reps included)
 teepee book 2000 --name quijote --lang es --from "En un lugar de la Mancha"

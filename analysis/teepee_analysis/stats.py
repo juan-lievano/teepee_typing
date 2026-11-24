@@ -10,6 +10,7 @@
                                        typed against pace), the same words in two exercises, pace by hour and
                                        by time into a session, records
     --days N   look back N days (default: all)      --tag X   only drills tagged X
+    --bars N   at most N bars in the wpm diagram, in the same width: fewer are fatter (default: 40)
     --open     also draw the master progress graph and open it in the image viewer
 
 An exercise is a mode on one source: sprint or master on a word list, literature on a book.
@@ -271,8 +272,9 @@ def drills_sql(a, mode, source):
 
 # ------------------------------------------------------------------ drawing
 
-BARS = 40   # most bars; past that many drills, that many groups
+BARS = 40   # most bars unless --bars says otherwise; past that many drills, that many groups
 BAR = 2     # columns wide
+WIDTH = BARS * (BAR + 1)   # columns the bars of a full diagram take, a gap after each; --bars cuts the same width otherwise
 RAMP = " ▁▂▃▄▅▆▇█"  # a cell filled by eighths from the bottom: the top of a bar lands within an eighth of a row
 PAD = 2     # columns between the box's edge and its contents
 MAX_ROWS = 20
@@ -288,10 +290,14 @@ def slope(xs, ys):
     return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx if sxx else None
 
 
-def histogram(vals):
+def histogram(vals, bars=BARS):
     """Bars of `vals` (None for an empty group) on a wpm axis from 10 below the lowest bar to the
     highest, both rounded out to multiples of 10, the row step the smallest of 1/2/5/10 that fits in MAX_ROWS rows, labels every 10.
-    The top cell of a bar is filled to the nearest eighth of a row."""
+    The top cell of a bar is filled to the nearest eighth of a row. `bars` of them are as wide as BARS of BAR columns:
+    fewer are fatter (to the column, so some one wider than others), more are thinner, and past WIDTH / 2 they touch."""
+    edges = [round(i * WIDTH / bars) for i in range(len(vals) + 1)]
+    gap = 1 if WIDTH // bars >= 2 else 0
+    wide = [b - a - gap for a, b in zip(edges, edges[1:])]
     present = [v for v in vals if v is not None]
     lo = max(0, int((min(present) - 10) // 10 * 10))
     hi = int(-(-max(present) // 10) * 10)
@@ -300,11 +306,11 @@ def histogram(vals):
     lines = []
     y = hi
     while y > lo:
-        cells = [RAMP[0 if v is None else round(8 * min(1, max(0, (v - y) / step + 1)))] * BAR for v in vals]
+        cells = [RAMP[0 if v is None else round(8 * min(1, max(0, (v - y) / step + 1)))] * w for v, w in zip(vals, wide)]
         label = f"{y:>3.0f}" if y % (10 if step >= 5 else 5) == 0 else "   "
-        lines.append(label + " │ " + " ".join(cells))
+        lines.append(label + " │ " + (" " * gap).join(cells))
         y -= step
-    lines.append(f"{lo:>3.0f} └─" + "─" * ((BAR + 1) * len(vals) - 1) + "  ")   # the slack keeps the right edge off the bars
+    lines.append(f"{lo:>3.0f} └─" + "─" * (edges[-1] - gap) + "  ")   # the slack keeps the right edge off the bars
     return "\n".join(lines)
 
 
@@ -462,15 +468,15 @@ def wpm_box(a, d, name, mode):
     if wpm.len() < 2:
         return None
     n = d.height
-    means = binned(d["wpm"].to_list(), BARS)
+    means = binned(d["wpm"].to_list(), a.bars)
     what = "lines" if mode == "literature" else "drills"
-    per_bar = "a bar per drill" if n <= BARS else f"each bar the mean of ~{n / BARS:.0f}"
+    per_bar = "a bar per drill" if n <= a.bars else f"each bar the mean of ~{n / a.bars:.0f}"
     title = f"{name} · {n} {what} · median {wpm.median():.0f} wpm · best {wpm.max():.0f} · {per_bar}"
     judged = d.filter(pl.col("wpm").is_not_null())
     trend = slope(judged["secs"].cum_sum().to_list(), judged["wpm"].to_list())   # secs: first key to last of each drill
     if trend is not None:
         title += f" · trend {3600 * trend:+.1f} wpm / hour typing"
-    return title + window(a), histogram(means)
+    return title + window(a), histogram(means, a.bars)
 
 
 def quick(a, con, drills):
@@ -1202,8 +1208,11 @@ def main() -> None:
     ap.add_argument("--full", action="store_true", help="the whole record: exercises compared, and what holds across them")
     ap.add_argument("--days", type=int, default=None, help="look back N days (default: all)")
     ap.add_argument("--tag")
+    ap.add_argument("--bars", type=int, default=BARS, help=f"most bars in the wpm diagram, in the same width (default: {BARS}, at most {WIDTH})")
     ap.add_argument("--open", action="store_true", help="also draw the master progress graph and open it in the image viewer")
     a = ap.parse_args()
+    if not 1 <= a.bars <= WIDTH:
+        ap.error(f"--bars must be between 1 and {WIDTH}")
     report(a)
 
 
