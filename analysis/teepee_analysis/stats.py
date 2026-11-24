@@ -968,7 +968,8 @@ def coverage_box(words: pl.DataFrame, lists):
 
 CLOUD = (20, 5)       # the word clouds' scale: a label every 20 wpm (or 20 %), 5 lines apart (the plot is as wide as the terminal)
 CLOUD_SD = 100        # the clean cloud sets a word seen n times off its share by a normal draw of deviation CLOUD_SD / (n + 1)² points
-CLOUD_TRIES = 8       # ... drawn again, up to this many times in all, while the dot it lands on is already lit
+CLOUD_TRIES = 256     # ... drawn again, up to this many times in all, while the dot it lands on is already lit: the bell has no
+                      # edge, so each further try may set a word further from its share, and trying until one is free would not end
 
 
 def count_ticks(at, most, across):
@@ -984,9 +985,11 @@ def count_ticks(at, most, across):
 def cloud(g: pl.DataFrame, hi, spread=None):
     """Rows of (word, n, value) as dots: across, n (each doubling the same step); up, the value, from 0 to `hi`.
     A word with count n is set at random between n and n + 1, so the low counts fill a band rather than stack in
-    a line; up, it is set off its value by a normal draw of deviation `spread(n)`, folded back at 0 and `hi`, and
-    both are drawn again (CLOUD_TRIES times at most, the words with the highest counts placed first) while the dot
-    is taken; a word that finds none free shares its first. Returns the plot and how many dots are lit."""
+    a line; up, with a `spread`, it is set off its value by a normal draw of deviation `spread(n)`, folded back at
+    0 and `hi`. The words with the highest counts are placed first. A word whose dot is taken: without a `spread`
+    it takes, at random, one of the dots still free at its value between n and n + 1, so it shares only when there
+    is none; with one it is drawn again, across and up, CLOUD_TRIES times at most, and then shares its first.
+    Returns the plot and how many dots are lit."""
     import math
     import random
     step, apart = CLOUD
@@ -1009,7 +1012,9 @@ def cloud(g: pl.DataFrame, hi, spread=None):
             if dot not in lit:
                 break
         else:
-            dot = first
+            free = [] if spread else [(x, dot[1]) for x in range(int(at(n) * wide), min(int(at(n + 1) * wide), wide - 1) + 1)
+                                      if (x, dot[1]) not in lit]
+            dot = rng.choice(free) if free else first
         lit.add(dot)
     labels = {(hi - v) // step * apart: v for v in range(0, hi + 1, step)}
     lines = []
@@ -1030,7 +1035,8 @@ def cloud_box(words: pl.DataFrame):
     if g.height < 100:
         return None
     hi = math.ceil(g["wpm"].quantile(0.998) / CLOUD[0]) * CLOUD[0]     # the fastest words are the few typed most: all but a stray one fit
-    return (f"{g.height} words · times typed clean against wpm over the word's own keys", cloud(g, hi)[0])
+    body, dots = cloud(g, hi)
+    return (f"{g.height} words on {dots} dots, the rest found none free · times typed clean against wpm over the word's own keys", body)
 
 
 def clean_cloud_box(words: pl.DataFrame):
@@ -1042,8 +1048,8 @@ def clean_cloud_box(words: pl.DataFrame):
     if g.height < 100:
         return None
     body, dots = cloud(g, 100, lambda n: CLOUD_SD / (n + 1) ** 2)
-    return (f"{g.height} words on {dots} dots · times seen (n) against % of those with no wrong key · "
-            f"spread {CLOUD_SD}/(n+1)² points, {CLOUD_TRIES} tries", body)
+    return (f"{g.height} words on {dots} dots · times seen (n) against % with no wrong key · "
+            f"spread {CLOUD_SD}/(n+1)² points · up to {CLOUD_TRIES} tries for a free dot", body)
 
 
 def full_view(a, con, drills):
