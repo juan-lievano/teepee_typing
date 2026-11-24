@@ -201,7 +201,9 @@ WHERE r_rn - l_rn <= $max AND r_dirty = l_dirty AND (r_t - l_t) / 1e6 < 1000 * (
 # wrong key standing at the end (in master, the key that failed the drill).
 # `slip` is any wrong key at all: unlike `messy` it does not count the
 # backspaces that pass through a word typed right on the way back to mend
-# the one before it. A drill's first word has no gap into it, so no time:
+# the one before it. The messy words tables and the clean cloud go by `slip`;
+# `messy` only decides which attempts a word's pace is read from, since a
+# backspace anywhere in a word spoils its time. A drill's first word has no gap into it, so no time:
 # `timed` is false for it. Whatever counts words keeps those rows; whatever
 # reads `ms` (CLEAN_TIMED: slow words, the same words in two exercises, the
 # speed cloud) leaves them out.
@@ -536,9 +538,9 @@ def slow_words(words: pl.DataFrame, top=TOP):
 
 
 def messy_words(words: pl.DataFrame, top=TOP):
-    """Words by how often typing them went wrong at all."""
+    """Words by how often a wrong key landed in them (a backspace alone, passing through, is no mistake)."""
     g = (words.filter(pl.col("done")).group_by("word")
-         .agg(pl.len().alias("n"), (pl.col("messy").mean() * 100).alias("messy"))
+         .agg(pl.len().alias("n"), (pl.col("slip").mean() * 100).alias("messy"))
          .filter((pl.col("n") >= MIN_MESSY) & (pl.col("messy") > 0))
          .sort(["messy", "n"], descending=True).head(top))
     if g.is_empty():
@@ -676,7 +678,7 @@ def long_view(a, con, drills, mode, source):
         gaps_box(gaps, delay),
         ("slow words", slow_words(words), f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes"),
         ("failed words", failed_words(words), "ended a drill twice or more · of = times reached") if mode == "master" else
-        ("messy words", messy_words(words), f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
+        ("messy words", messy_words(words), f"{MIN_MESSY}+ attempts · messy = a wrong key landed in the word"),
         bigram_box(gaps_in),
         letters_box(gaps_in),
         misses_box(con, ids),
@@ -925,7 +927,7 @@ def list_words(words: pl.DataFrame, name):
     if slow_words(words) == messy_words(words):     # neither has a word yet
         return None
     return (f"{name} · slow and messy words", lambda n: beside([slow_words(words, n), messy_words(words, n)], "    "),
-            f"slow: clean {MIN_WORD}+ times, ms over the usual for its length · messy: {MIN_MESSY}+ attempts, % not clean")
+            f"slow: clean {MIN_WORD}+ times, ms over the usual for its length · messy: {MIN_MESSY}+ attempts, % with a wrong key")
 
 
 def list_words_of(name):
@@ -1083,7 +1085,7 @@ def full_view(a, con, drills):
         ("slow words · everywhere", lambda n: slow_words(words, n),
          f"typed clean {MIN_WORD}+ times · ms slower than a word that long usually takes"),
         ("messy words · everywhere", lambda n: messy_words(words, n),
-         f"{MIN_MESSY}+ attempts · messy = a wrong key or a backspace on the way"),
+         f"{MIN_MESSY}+ attempts · messy = a wrong key landed in the word"),
         bigram_box(gaps_in),
         same_words(words, list(per)),
         keyboards_box(judged, gaps_in),
