@@ -1007,7 +1007,7 @@ def cloud(g: pl.DataFrame, hi, spread=None):
             if spread:
                 v = abs(v + rng.gauss(0, spread(n))) % (2 * hi)
                 v = min(v, 2 * hi - v)
-            dot = (min(x, wide - 1), round((hi - min(v, hi)) / step * apart * 4 + 1.5))      # a labelled value is the middle of its line
+            dot = (min(x, wide - 1), round((hi - min(v, hi)) / step * apart * 4 + 3))      # a labelled value is the bottom of its line
             first = first or dot
             if dot not in lit:
                 break
