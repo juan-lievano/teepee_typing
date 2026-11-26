@@ -142,6 +142,7 @@ teepee stats --full          # the whole record, literature left out: a row per 
                              # exercises; pace by hour and by time into a session; records;
                              # each sprint list's slowest and most mistyped words;
                              # how much of each sprint list (words, trigrams, bigrams) has been typed
+                             # per list and for all of them as one, the spread (least, quartiles, most) of how many times each word has been typed
 teepee stats --open          # also the master progress graph (wpm per drill, per-word survival over the
                              # last 100) as a PNG in the image viewer
 teepee stats --tag voyager --days 7
