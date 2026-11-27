@@ -135,7 +135,7 @@ teepee stats lit --book quijote             # the space), slow words (clean atte
                              # for master, drill-ending fails), the slowest and fastest bigrams and
                              # the gap into each letter, both only between keys off the home row: a
                              # home-row mod is reported when its tap is decided, not when it is pressed
-teepee stats --full          # the whole record, literature left out: a row per exercise (drills, minutes, wpm, the three
+teepee stats --full          # the whole record, sprints only: a row per exercise (drills, minutes, wpm, the three
                              # gaps, wpm over time), then pooled over every exercise: slow and messy
                              # words, bigrams; every word as a dot, times typed
                              # against its pace; the same words in two

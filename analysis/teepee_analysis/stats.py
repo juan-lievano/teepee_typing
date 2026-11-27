@@ -5,7 +5,7 @@
     teepee stats sprint                one exercise, every box on its drills only: the wpm bars, by day,
     teepee stats master --list english_10k    the three gaps, slow words, messy words, slowest and
     teepee stats lit --book quijote           fastest bigrams, the gap into each letter (off the home row)
-    teepee stats --full                the whole record: every exercise in one table, then what holds across
+    teepee stats --full                the whole record, sprints only: every exercise in one table, then what holds across
                                        them (slow and messy words, bigrams), every word as a dot (times
                                        typed against pace), the same words in two exercises, pace by hour and
                                        by time into a session, records, per list the spread (least, quartiles,
@@ -713,7 +713,7 @@ def exercises(drills: pl.DataFrame):
     return [(r["mode"], r["source"]) for r in e.iter_rows(named=True)]
 
 
-def exercise_table(per, practice):
+def exercise_table(per):
     """A row per exercise, most typed first: how much, how fast, how clean, its three gaps."""
     cols = [("exercise", "<", ""), ("drills", ">", "d"), ("min", ">", ".0f"), ("wpm", ">", ".0f"), ("last 20", ">", ".0f"),
             ("best", ">", ".0f"), ("acc %", ">", ".1f"), ("wrong", ">", ".1f"), ("start", ">", ".0f"), ("letter", ">", ".0f"),
@@ -726,8 +726,6 @@ def exercise_table(per, practice):
                      100 * d["chars_correct"].sum() / typed if typed else None,
                      None if e["mode"] == "master" else d["words_wrong"].sum() / d.height,
                      e["gaps"]["start"], e["gaps"]["letter"], e["gaps"]["space"]))
-    if practice.height:
-        rows.append(("practice reps", practice.height, practice["secs"].fill_null(0).sum() / 60, *[None] * 8))
     note = "wpm = median · wrong = words ended wrong per drill · start, letter, space = median ms into each"
     return table(cols, rows), note
 
@@ -943,10 +941,10 @@ def list_words_of(name):
     return sorted({w.lower() for w in json.loads(path.read_text())["words"]}) if path.exists() else None
 
 
-def lists_and_union(lists, played):
-    """[(name, its words)] of `lists`, shortest first, then the union of every list in `played` as one more list:
+def lists_and_union(played):
+    """[(name, its words)] of the lists played, shortest first, then their union as one more list:
     the words the clouds draw from."""
-    out = sorted(((name, ws) for name in set(lists) if (ws := list_words_of(name))), key=lambda nw: len(nw[1]))
+    out = sorted(((name, ws) for name in set(played) if (ws := list_words_of(name))), key=lambda nw: len(nw[1]))
     union = sorted({w for name in set(played) for w in list_words_of(name) or []})
     return out + ([(f"all {len(set(played))} lists", union)] if out and len(set(played)) > 1 else [])
 
@@ -961,7 +959,7 @@ def times_typed(words: pl.DataFrame):
     return dict(done.group_by("word").agg(pl.len()).iter_rows())
 
 
-def coverage_box(words: pl.DataFrame, lists, played):
+def coverage_box(words: pl.DataFrame, played):
     """For each list: how many times over all of it has been typed, and how far the next time through has got,
     in its distinct words, trigrams and bigrams."""
     met = times_typed(words)
@@ -971,7 +969,7 @@ def coverage_box(words: pl.DataFrame, lists, played):
             for g in grams(w, k):
                 seen[k][g] += n
     rows = []
-    for name, ws in lists_and_union(lists, played):
+    for name, ws in lists_and_union(played):
         for k, what in ((0, "words"), (3, "trigrams"), (2, "bigrams")):      # a line each: the box is narrow and as tall as its row
             have = set(ws) if k == 0 else {g for w in ws for g in grams(w, k)}
             over = min(seen[k][g] for g in have)        # every one of them has been typed this many times
@@ -990,7 +988,7 @@ def whisker_box(words: pl.DataFrame, played):
     typed. Each number is the count of a real word."""
     met = times_typed(words)
     rows = []
-    for name, ws in lists_and_union(played, played):
+    for name, ws in lists_and_union(played):
         s = sorted(met.get(w, 0) for w in ws)
         rows.append((name, len(s), *(s[round(q * (len(s) - 1))] for q in (0, 0.05, 0.25, 0.5, 0.75, 0.95, 1))))
     if not rows:
@@ -1094,8 +1092,10 @@ def clean_cloud_box(words: pl.DataFrame):
 
 
 def full_view(a, con, drills):
-    lit = drills.filter(pl.col("mode") == "literature").height
-    drills = drills.filter(pl.col("mode") != "literature")   # another language: its words and pace do not pool with the lists
+    # literature is another language: its words and pace do not pool with the lists. master may be retired: until that is
+    # settled the whole record is sprints. Practice reps are spawned by those two modes only, so they go too.
+    left = drills.filter(pl.col("mode") != "sprint").height
+    drills = drills.filter(pl.col("mode") == "sprint")
     judged = drills.filter(pl.col("outcome").is_in(["failed", "completed"]) & (pl.col("mode") != "practice"))
     if judged.height < 2:
         print("\nnot enough drills yet\n")
@@ -1123,8 +1123,8 @@ def full_view(a, con, drills):
     right = drills["words"].sum() - drills.filter(pl.col("mode") == "sprint")["words_wrong"].sum()
     title = (f"teepee · {days} day{'s' if days != 1 else ''} · {hours:.1f} h at the keys · "
              f"{drills.height} drills · {right:,} words · {keys:,} keys".replace(",", " ") + window(a)
-             + (" · literature left out" if lit else ""))
-    lead = (title, *exercise_table(per, drills.filter(pl.col("mode") == "practice")))
+             + (" · sprints only" if left else ""))
+    lead = (title, *exercise_table(per))
 
     played = [e["d"]["source"][0] for e in per.values()]
     parts = [
@@ -1138,7 +1138,7 @@ def full_view(a, con, drills):
         same_words(words, list(per)),
         keyboards_box(judged, gaps_in),
         *rhythm(drills),
-        coverage_box(words, [e["d"]["source"][0] for e in per.values() if e["mode"] == "sprint"], played),
+        coverage_box(words, played),
         whisker_box(words, played),
         *(list_words(words.filter(pl.col("ex") == name), name) for name, e in per.items() if e["mode"] == "sprint"),
         journal_box(con),
